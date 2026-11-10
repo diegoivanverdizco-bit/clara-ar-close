@@ -1,0 +1,7 @@
+openpyxl>=3.1
+xlsxwriter>=3.2
+pandas>=2.2
+streamlit>=1.40
+pytest>=8.0
+# optional: only if you enable the language-model assistant (--llm)
+anthropic>=0.40
