@@ -141,11 +141,193 @@ def decision(clave, etiqueta):
         rev.decidir(clave, "rechazado", usuario, com); st.rerun()
 
 
-tabs = st.tabs(["A1 Cash application", "A2 Exceptions", "A3 Journal entries", "A4 Aging", "A5 IVA", "Checks & audit",
-                "AI draft"])
+def exportar_excel(key):
+    """Build the Excel (draft while anything is pending) and offer it for download; logged in the audit log."""
+    borrador = bool(rev.pendientes(claves))
+    nombre = f"{s.res.cierre:%Y-%m}_cierre_cxc_{'BORRADOR' if borrador else 'APROBADO'}.xlsx"
+    if st.button("Build Excel", key=key):
+        try:
+            xlsx = a_excel(s, salida / nombre, rev, bit, borrador=borrador)
+        except PermissionError:
+            st.error(f"Cannot write {nombre}: it is open in another program (probably Excel). Close it and try again.")
+            return
+        bit.registrar("export", archivo=xlsx.name, sha256=sha256_archivo(xlsx),
+                      pendientes=len(rev.pendientes(claves)), borrador=borrador)
+        st.download_button("Download " + nombre, xlsx.read_bytes(), file_name=nombre, key=key + "_dl")
+
+
+def mostrar_hecho(clave, titulo):
+    """A card already decided: one line with who decided what."""
+    estado = rev.estado(clave)
+    d = rev.datos["items"].get(clave, {})
+    st.markdown(("✅ " if estado == "aprobado" else "❌ ") + f"{titulo}: **{estado}** by {d.get('usuario', '')}"
+                + (f" ({d['comentario']})" if d.get("comentario") else ""))
+
+
+def tarjetas_inicio():
+    """Start here: only what needs the reviewer's judgment, most urgent first, each with the facts to decide and
+    buttons that act. Every button calls the same Revision methods as the other tabs; nothing is computed here."""
+    from cierre_cxc.familias import FRASE, PORQUE, PRESTAMO, RESPONSABLE
+    cols = st.columns([5, 2])
+    cols[0].markdown("Only what needs your judgment is here, most urgent first. The code computed every amount; "
+                     "you decide.")
+    if cols[1].button("Improve with AI", key="si_ia", type="primary"):
+        with st.spinner("The AI is rewording the cards (about 20 seconds)..."):
+            st.session_state["borrador_ia"] = redactar_cierre(
+                s, bit, criterios=Criterios(salida / "criterios_aprendidos.json", bit).textos())
+            st.session_state["decisiones_ia"] = {}
+    b = st.session_state.get("borrador_ia")
+    if b and b["origen"] == "ia":
+        st.success(f"AI wording checked: all {b['verificados']['numeros']} numbers and {b['verificados']['folios']} "
+                   "folios match the close.")
+    elif b:
+        st.warning(f"Fixed wording kept (the AI text was not used): {b['motivo']}")
+    if b:
+        with st.expander("Summary for the Controller", expanded=True):
+            st.markdown(b["resumen"])
+            st.caption("Approve it and see the email drafts in the AI draft tab.")
+    ia = {d["id"]: d for d in b["decisiones"]} if b else {}
+    claves_exc = dict(zip(map(id, s.excepciones), claves_excepciones(s.excepciones)))
+    exc_de = {}                                   # movement or folio -> its exceptions
+    for e in s.excepciones:
+        exc_de.setdefault(e.referencia, []).append(e)
+    en_tarjeta = set()
+
+    def texto(e):
+        """What happens / suggested: the AI's checked wording if there is one, else the fixed sentence."""
+        if e.id in ia:
+            return ia[e.id]["que_pasa"], ia[e.id]["solucion_sugerida"]
+        que = FRASE.get(e.categoria, e.que).format(refs=e.referencia, monto=f"{e.monto_mxn:,.2f}")
+        return que, (PORQUE.get(e.categoria, "") and "Why it matters: " + PORQUE[e.categoria] + " ") + e.accion
+
+    st.caption("Decide from the top. Choosing a customer or rejecting a correction recomputes the close, so "
+               "approvals given before it go back to pending.")
+    if not usuario:
+        st.warning("Write your name in the sidebar to decide.")
+
+    # 1. receipts with a clue (level 2): nothing applied until a candidate is chosen
+    for u in [u for u in s.res.efectivo_no_identificado if u.get("nivel") == 2]:
+        en_tarjeta.add(clave_match(u["mov_id"]))
+        en_tarjeta.update(claves_exc[id(e)] for e in exc_de.get(u["mov_id"], []))
+        with st.container(border=True):
+            st.markdown(f"**Receipt to confirm** · `{u['mov_id']}` · {u['monto']:,.2f} {u['moneda']} · {u['fecha']}")
+            st.markdown(f"Bank says: *{u['descripcion']}*. Only a clue: pick the invoice it pays.")
+            for i, c in enumerate(u["candidatos"], start=1):
+                cols = st.columns([6, 2])
+                cols[0].markdown(f"**{c['folio']}** {c['cliente']}, balance {c['saldo']:,.2f} {c['moneda']}: "
+                                 f"{c['evidencia']}")
+                if cols[1].button(f"It pays {c['folio']}", key=f"si_acc_{u['mov_id']}_{c['folio']}",
+                                  disabled=not usuario):
+                    rev.anular_conciliacion(u["mov_id"], "asignar", usuario, [c["folio"]],
+                                            f"accepted proposed candidate {i}: {c['evidencia']}")
+                    st.rerun()
+
+    # 2. money with no owner (level 3): held in 2101 until someone identifies it
+    for u in [u for u in s.res.efectivo_no_identificado if u.get("nivel") == 3]:
+        excs = [e for e in exc_de.get(u["mov_id"], []) if e.categoria == "Unidentified cash"]
+        claves_u = [clave_match(u["mov_id"])] + [claves_exc[id(e)] for e in excs]
+        en_tarjeta.update(claves_u)
+        titulo = f"Money with no owner · `{u['mov_id']}` · {u['monto']:,.2f} {u['moneda']}"
+        if all(rev.estado(k) != "pendiente" for k in claves_u):
+            mostrar_hecho(claves_u[-1], titulo)
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{titulo}** · {u['fecha']}")
+            st.markdown(f"Bank says: *{u['descripcion']}*.")
+            if PRESTAMO.search(u["descripcion"]):
+                st.markdown("**Clue:** it reads like a loan drawdown, not a customer payment.")
+            elif excs:
+                st.markdown(texto(excs[0])[0])
+            else:
+                st.markdown("No customer or invoice in the description.")
+            cols = st.columns([4, 1.6, 1.8])
+            com = cols[0].text_input("Comment", key=f"si_c3_{u['mov_id']}", label_visibility="collapsed",
+                                     placeholder="comment (required for 'Not from a customer')")
+            if cols[1].button("Keep in 2101", key=f"si_2101_{u['mov_id']}", disabled=not usuario):
+                for k in claves_u:
+                    rev.decidir(k, "aprobado", usuario, com or "kept in 2101 until identified")
+                st.rerun()
+            if cols[2].button("Not from a customer", key=f"si_nocxc_{u['mov_id']}", disabled=not usuario):
+                if not com.strip():
+                    st.error("Write the reason (for example: loan drawdown from the bank).")
+                else:
+                    rev.anular_conciliacion(u["mov_id"], "no_cxc", usuario, [], com)
+                    st.rerun()
+
+    # 3. conditional journal entries: posted only if the Controller approves
+    tc = {k["folio"] for k in s.res.correcciones_tc if k["aplicada"]}
+    for p, clave_p in zip(s.polizas, claves_polizas(s.polizas)):
+        if p.estado != "condicionada":
+            continue
+        en_tarjeta.add(clave_p)
+        monto = sum(l.debe for l in p.lineas)
+        titulo = f"Conditional entry · `{p.id}` · {p.concepto} · {monto:,.2f} MXN"
+        if rev.estado(clave_p) != "pendiente":
+            mostrar_hecho(clave_p, titulo)
+            continue
+        folio_tc = next((f for f in tc if f in p.concepto), None)
+        with st.container(border=True):
+            st.markdown(f"**{titulo}**")
+            if p.nota:
+                st.markdown(p.nota)
+            cols = st.columns([4, 1.4, 1.4])
+            com = cols[0].text_input("Comment", key=f"si_cp_{clave_p}", label_visibility="collapsed",
+                                     placeholder="comment")
+            if cols[1].button("Approve", key=f"si_pa_{clave_p}", disabled=not usuario):
+                rev.decidir(clave_p, "aprobado", usuario, com); st.rerun()
+            if cols[2].button("Reject", key=f"si_pr_{clave_p}", disabled=not usuario):
+                if folio_tc:
+                    rev.rechazar_correccion(folio_tc, usuario, com or "rejected in Start here")
+                else:
+                    rev.decidir(clave_p, "rechazado", usuario, com)
+                st.rerun()
+
+    # 4. high-priority exceptions not already in a card above
+    for e in s.excepciones:
+        clave_e = claves_exc[id(e)]
+        if e.severidad != "alta" or clave_e in en_tarjeta:
+            continue
+        en_tarjeta.add(clave_e)
+        titulo = f"`{e.id}` {e.categoria} · {e.referencia} · {e.monto_mxn:,.2f} MXN"
+        if rev.estado(clave_e) != "pendiente":
+            mostrar_hecho(clave_e, titulo)
+            continue
+        que, sugerida = texto(e)
+        with st.container(border=True):
+            st.markdown(f"**{titulo}** · {RESPONSABLE.get(e.responsable, e.responsable)} · due {e.fecha_limite}")
+            st.markdown(f"**What happens:** {que}")
+            st.markdown(f"**Suggested:** {sugerida}")
+            cols = st.columns([4, 1.4, 1.4])
+            com = cols[0].text_input("Comment", key=f"si_ce_{clave_e}", label_visibility="collapsed",
+                                     placeholder="comment (required to reject)")
+            if cols[1].button("Approve", key=f"si_ea_{clave_e}", disabled=not usuario):
+                rev.decidir(clave_e, "aprobado", usuario, com); st.rerun()
+            if cols[2].button("Reject", key=f"si_er_{clave_e}", disabled=not usuario):
+                if not com.strip():
+                    st.error("Write why you reject it.")
+                else:
+                    rev.decidir(clave_e, "rechazado", usuario, com); st.rerun()
+
+    # 5. the rest: exact receipts and routine items
+    resto = [c for c in rev.pendientes(claves) if c not in en_tarjeta]
+    st.subheader("The rest")
+    st.markdown(f"**{len(resto)}** other items pending (receipts matched by folio and amount, routine entries "
+                "and lower-priority exceptions). Their evidence is in A1, A2 and A3.")
+    if resto and st.button(f"Approve the rest ({len(resto)})", key="si_resto", disabled=not usuario):
+        for c in resto:
+            rev.decidir(c, "aprobado", usuario, "approved with the rest in Start here")
+        st.rerun()
+    exportar_excel("si_excel")
+
+
+tabs = st.tabs(["Start here", "A1 Cash application", "A2 Exceptions", "A3 Journal entries", "A4 Aging", "A5 IVA",
+                "Checks & audit", "AI draft"])
 t = todas_las_tablas(s, rev)
 
 with tabs[0]:
+    tarjetas_inicio()
+
+with tabs[1]:
     st.subheader("Bank movements")
     st.dataframe(_df(t["A1_Bank_Movements"]), width="stretch", hide_index=True)
     st.caption("Receipts: " + " | ".join(f"{n}: {k}" for n, k in conteo_niveles(s).items()))
@@ -203,13 +385,13 @@ with tabs[0]:
             rev.reabrir("learned rule removed " + regla_q)
             st.rerun()
 
-with tabs[1]:
+with tabs[2]:
     st.dataframe(_df(t["A2_Exceptions"]), width="stretch", hide_index=True)
     claves_exc = dict(zip(map(id, s.excepciones), claves_excepciones(s.excepciones)))
     for e in sorted(s.excepciones, key=lambda x: {"alta": 0, "media": 1, "baja": 2}[x.severidad]):
         decision(claves_exc[id(e)], f"`{e.id}` **{e.severidad}** {e.categoria} - {e.referencia}: {e.que}")
 
-with tabs[2]:
+with tabs[3]:
     st.dataframe(_df(t["A3_Journal_Entries"]), width="stretch", hide_index=True)
     for p, clave_p in zip(s.polizas, claves_polizas(s.polizas)):
         etiqueta = f"`{p.id}` {p.tipo} - {p.concepto}" + (" *(conditional)*" if p.estado == "condicionada" else "")
@@ -220,22 +402,22 @@ with tabs[2]:
         if f and st.button("Reject correction and recompute", disabled=not usuario):
             rev.rechazar_correccion(f, usuario, "rejected in UI"); st.rerun()
 
-with tabs[3]:
+with tabs[4]:
     st.dataframe(_df(t["A4_Aging"]), width="stretch", hide_index=True)
     st.subheader("Roll-forward")
     st.dataframe(_df(t["A4_Roll_Forward"]), width="stretch", hide_index=True)
 
-with tabs[4]:
+with tabs[5]:
     st.dataframe(_df(t["A5_IVA_Collected"]), width="stretch", hide_index=True)
     st.dataframe(_df(t["A5_IVA_Roll_Forward"]), width="stretch", hide_index=True)
 
-with tabs[5]:
+with tabs[6]:
     st.dataframe(pd.DataFrame([{"check": n, "result": "PASS" if ok else "FAIL", "detail": d} for n, ok, d in s.controles]),
                  width="stretch", hide_index=True)
     st.subheader("Audit log")
     st.dataframe(pd.DataFrame(bit.leer()).astype(str), width="stretch", hide_index=True)
 
-with tabs[6]:
+with tabs[7]:
     criterios = Criterios(salida / "criterios_aprendidos.json", bit)
     st.caption("The AI drafts, the code checks every number and folio against the close, and you decide. "
                "Nothing is sent or posted from here.")
@@ -316,14 +498,4 @@ if usuario and st.button("Approve every pending item as " + usuario):
     for c in pend:
         rev.decidir(c, "aprobado", usuario, "bulk approval in UI")
     st.rerun()
-borrador = bool(rev.pendientes(claves))
-nombre = f"{s.res.cierre:%Y-%m}_cierre_cxc_{'BORRADOR' if borrador else 'APROBADO'}.xlsx"
-if st.button("Build Excel"):
-    try:
-        xlsx = a_excel(s, salida / nombre, rev, bit, borrador=borrador)
-    except PermissionError:
-        st.error(f"Cannot write {nombre}: it is open in another program (probably Excel). Close it and try again.")
-        st.stop()
-    bit.registrar("export", archivo=xlsx.name, sha256=sha256_archivo(xlsx), pendientes=len(rev.pendientes(claves)),
-                  borrador=borrador)
-    st.download_button("Download " + nombre, xlsx.read_bytes(), file_name=nombre)
+exportar_excel("excel")

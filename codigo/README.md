@@ -28,6 +28,11 @@ python -m cierre_cxc run --datos "path/to/Case_Data.xlsx" --usuario "Diego"
 
 # 2. review in the browser (approve / reject with comments, reassign a receipt, reject a conditional entry)
 python -m cierre_cxc ui --datos "path/to/Case_Data.xlsx"
+#    the first tab, "Start here", shows only what needs the reviewer's judgment, most urgent first:
+#    receipts to confirm, money with no owner, conditional entries and high exceptions. Each card has the facts
+#    to decide and buttons that act (pick the invoice, keep in 2101, not from a customer, approve, reject with a
+#    reason); then "Approve the rest" and "Build Excel". "Improve with AI" rewords the cards and writes the
+#    summary, under the same number-and-folio check; without it the cards use fixed wording.
 
 # the same review from the command line
 python -m cierre_cxc accept B08 --datos "path/to/Case_Data.xlsx" --candidato 1 --usuario "Diego"   # take a proposed candidate
@@ -206,7 +211,7 @@ declined request all fall back to the template; a valid draft is accepted and lo
 
 ## Tests
 
-`python -m pytest -q` runs 328 tests:
+`python -m pytest -q` runs 338 tests:
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").
@@ -217,6 +222,7 @@ declined request all fall back to the template; a valid draft is accepted and lo
   cross-currency receipt with a small rate difference.
 - `test_asistente_llm.py`: the model guards.
 - `test_app.py`: the review UI, including the AI draft tab.
+- `test_inicio.py`: the Start here tab: each kind of card, its buttons, approving the rest and the AI rewording.
 - `test_redaccion.py`: the AI draft and its number-and-folio check.
 - `test_rfc_generico.py`: customers that share a generic RFC (XEXX010101000 foreign, XAXX010101000 general
   public) are told apart by RFC + name.
