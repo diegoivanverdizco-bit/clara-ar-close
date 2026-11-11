@@ -205,6 +205,10 @@ def tarjetas_inicio():
     if not usuario:
         st.warning("Write your name in the sidebar to decide.")
 
+    reps = {}                                     # invoice folio -> amounts paid in its REPs
+    for f in s.res.ds.rep:
+        reps.setdefault(f.datos.get("folio"), []).append(f.datos.get("pagado"))
+
     # 1. receipts with a clue (level 2): nothing applied until a candidate is chosen
     for u in [u for u in s.res.efectivo_no_identificado if u.get("nivel") == 2]:
         en_tarjeta.add(clave_match(u["mov_id"]))
@@ -212,10 +216,27 @@ def tarjetas_inicio():
         with st.container(border=True):
             st.markdown(f"**Receipt to confirm** · `{u['mov_id']}` · {u['monto']:,.2f} {u['moneda']} · {u['fecha']}")
             st.markdown(f"Bank says: *{u['descripcion']}*. Only a clue: pick the invoice it pays.")
+            # the facts to choose: a REP already issued for this exact amount, and which invoice is the oldest
+            # (without the customer's indication the SAT payments complement guide applies to the oldest)
+            con_rep = [c["folio"] for c in u["candidatos"] if any(
+                p is not None and abs(Decimal(str(p)) - Decimal(str(u["monto"]))) <= Decimal("0.01")
+                for p in reps.get(c["folio"], []))]
+            fechas = {c["folio"]: s.res.partidas[c["folio"]].fecha for c in u["candidatos"]
+                      if c["folio"] in s.res.partidas}
+            antigua = min(fechas, key=fechas.get) if fechas else None
+            sugerida = con_rep[0] if len(con_rep) == 1 else antigua
+            if sugerida:
+                st.markdown(f"**Suggested: {sugerida}**, because "
+                            + (f"a REP for exactly {u['monto']:,.2f} was already issued against it."
+                               if sugerida in con_rep else
+                               "it is the oldest open invoice: without the customer's indication, the SAT payments "
+                               "guide applies the payment to the oldest one.")
+                            + " Confirm with the customer if in doubt.")
             for i, c in enumerate(u["candidatos"], start=1):
                 cols = st.columns([6, 2])
-                cols[0].markdown(f"**{c['folio']}** {c['cliente']}, balance {c['saldo']:,.2f} {c['moneda']}: "
-                                 f"{c['evidencia']}")
+                pistas = ([f"issued {fechas[c['folio']]}"] if c["folio"] in fechas else [])                     + (["oldest"] if c["folio"] == antigua else [])                     + ([f"REP for {u['monto']:,.2f}"] if c["folio"] in con_rep else ["no REP for this amount"])
+                cols[0].markdown(("⭐ " if c["folio"] == sugerida else "") + f"**{c['folio']}** · balance "
+                                 f"{c['saldo']:,.2f} {c['moneda']} · " + " · ".join(pistas))
                 if cols[1].button(f"It pays {c['folio']}", key=f"si_acc_{u['mov_id']}_{c['folio']}",
                                   disabled=not usuario):
                     rev.anular_conciliacion(u["mov_id"], "asignar", usuario, [c["folio"]],

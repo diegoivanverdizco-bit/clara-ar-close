@@ -211,7 +211,7 @@ declined request all fall back to the template; a valid draft is accepted and lo
 
 ## Tests
 
-`python -m pytest -q` runs 338 tests:
+`python -m pytest -q` runs 339 tests:
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").

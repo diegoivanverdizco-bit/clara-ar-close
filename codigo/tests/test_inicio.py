@@ -39,6 +39,13 @@ def _eventos(tmp_path):
     return [json.loads(l) for l in (tmp_path / "bitacora_auditoria.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
+def test_cobro_por_confirmar_dice_cual_sugiere_y_por_que(tmp_path, monkeypatch):
+    at = _app(EXAMEN, tmp_path, monkeypatch)
+    assert any("Suggested: A-1017" in m.value and "REP for exactly 50,000.00" in m.value for m in at.markdown)
+    assert any("A-1017" in m.value and "oldest" in m.value and "REP for 50,000.00" in m.value for m in at.markdown)
+    assert any("A-1021" in m.value and "no REP for this amount" in m.value for m in at.markdown)
+
+
 def test_cobro_por_confirmar_se_aplica_a_la_candidata_elegida(tmp_path, monkeypatch):
     at = _clic(_app(EXAMEN, tmp_path, monkeypatch), "si_acc_B08_A-1017")
     assert _rev(tmp_path)["conciliacion"]["B08"]["folios"] == ["A-1017"]
