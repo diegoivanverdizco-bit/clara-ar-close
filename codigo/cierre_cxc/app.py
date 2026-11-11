@@ -17,6 +17,7 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 from cierre_cxc.aprendizaje import Reglas                                    # noqa: E402
+from cierre_cxc.asistente_llm import redactar_cierre                         # noqa: E402
 from cierre_cxc.auditoria import Bitacora, sha256_archivo                    # noqa: E402
 from cierre_cxc.cargar import SchemaError                                    # noqa: E402
 from cierre_cxc.cli import claves_revisables                                 # noqa: E402
@@ -139,7 +140,8 @@ def decision(clave, etiqueta):
         rev.decidir(clave, "rechazado", usuario, com); st.rerun()
 
 
-tabs = st.tabs(["A1 Cash application", "A2 Exceptions", "A3 Journal entries", "A4 Aging", "A5 IVA", "Checks & audit"])
+tabs = st.tabs(["A1 Cash application", "A2 Exceptions", "A3 Journal entries", "A4 Aging", "A5 IVA", "Checks & audit",
+                "AI draft"])
 t = todas_las_tablas(s, rev)
 
 with tabs[0]:
@@ -231,6 +233,38 @@ with tabs[5]:
                  width="stretch", hide_index=True)
     st.subheader("Audit log")
     st.dataframe(pd.DataFrame(bit.leer()).astype(str), width="stretch", hide_index=True)
+
+with tabs[6]:
+    st.caption("Optional. One call to the language model with the figures the tool already computed. It drafts the "
+               "summary for the Controller, each high exception in plain words and one email per owner. Every number "
+               "and folio in the draft is checked against the close; if one is not there, the template is used. It is "
+               "a draft: nothing is sent or posted, and a reviewer approves it.")
+    if st.button("Draft with AI", key="ia_borrador"):
+        with st.spinner("Drafting..."):
+            st.session_state["borrador_ia"] = redactar_cierre(s, bit)
+    b = st.session_state.get("borrador_ia")
+    if b:
+        if b["origen"] == "ia":
+            st.success(f"AI draft verified: {b['verificados']['numeros']} numbers and {b['verificados']['folios']} "
+                       f"folios match the close (model {b['modelo']}). Check the wording before approving.")
+        else:
+            st.warning(f"Template draft (no AI text was used): {b['motivo']}")
+        st.subheader("Summary for the Controller")
+        st.markdown(b["resumen"])
+        if b["excepciones"]:
+            st.subheader("High exceptions in plain words")
+            st.dataframe(pd.DataFrame([{"referencia": x.get("referencia", ""), "familia": x.get("familia", ""),
+                                        "explicacion": x.get("explicacion", "")} for x in b["excepciones"]]),
+                         width="stretch", hide_index=True)
+        if b["correos"]:
+            st.subheader("Draft emails (not sent)")
+            for i, c in enumerate(b["correos"]):
+                with st.expander(f"To: {c['para']} - {c['asunto']}"):
+                    st.text_area("Body", c["cuerpo"], key=f"correo_{i}", height=220)
+        if st.button("Approve draft as " + (usuario or "..."), key="ia_aprobar", disabled=not usuario):
+            bit.registrar("draft_approved", origen=b["origen"], modelo=b.get("modelo"),
+                          numeros=b["verificados"]["numeros"], folios=b["verificados"]["folios"])
+            st.success("Draft approved and recorded in the audit log.")
 
 st.divider()
 if usuario and st.button("Approve every pending item as " + usuario):

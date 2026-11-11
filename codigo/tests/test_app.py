@@ -44,3 +44,32 @@ def test_la_interfaz_acepta_un_candidato_con_un_clic(datos_caso, tmp_path, monke
     datos = json.loads((tmp_path / "revision.json").read_text(encoding="utf-8"))
     assert datos["conciliacion"]["B03"]["folios"] == ["A-1001"] and datos["conciliacion"]["B03"]["usuario"] == "Diego"
     assert {m.label: m.value for m in at.metric}["Closing AR (MXN)"] == "1,759,932.85"   # applied after the click
+
+
+def _app_borrador(datos_caso, tmp_path, monkeypatch, cliente):
+    import cierre_cxc.asistente_llm as llm
+    monkeypatch.setattr(sys, "argv", ["app", "--datos", str(datos_caso), "--salida", str(tmp_path)])
+    monkeypatch.setattr(llm, "_cliente_anthropic", lambda: cliente)
+    at = AppTest.from_file(str(RAIZ / "cierre_cxc" / "app.py"), default_timeout=90).run()
+    at.sidebar.text_input[0].input("Diego").run()
+    next(b for b in at.button if b.key == "ia_borrador").click().run()
+    assert not at.exception
+    return at
+
+
+def test_borrador_con_ia_verificado_se_muestra_y_se_aprueba(datos_caso, tmp_path, monkeypatch):
+    from test_asistente_llm import FakeCliente
+    resp = json.dumps({"resumen": "La cartera cierra en 1,759,932.85 MXN.", "excepciones": [],
+                       "correos": [{"para": "Fiscal", "asunto": "A-1008", "cuerpo": "Revisa A-1008."}]})
+    at = _app_borrador(datos_caso, tmp_path, monkeypatch, FakeCliente(resp))
+    assert any("verified" in s.value for s in at.success)
+    next(b for b in at.button if b.key == "ia_aprobar").click().run()
+    eventos = [json.loads(l) for l in (tmp_path / "bitacora_auditoria.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(e["evento"] == "llm_draft" and e["aceptado"] for e in eventos)
+    assert any(e["evento"] == "draft_approved" and e["usuario"] == "Diego" for e in eventos)
+
+
+def test_borrador_sin_clave_muestra_la_plantilla(datos_caso, tmp_path, monkeypatch):
+    at = _app_borrador(datos_caso, tmp_path, monkeypatch, None)
+    assert any("Template" in w.value for w in at.warning)
+    assert any("1,759,932.85" in m.value for m in at.markdown)

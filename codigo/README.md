@@ -164,18 +164,31 @@ if any check fails.
 
 ## Where the language model is used, and how it is fenced
 
-The model is used in only two places, and only when you pass `--llm` (it needs `ANTHROPIC_API_KEY`; the model is
-set with `CIERRE_LLM_MODEL`):
+The model writes and suggests; the code computes and checks; a person approves. It needs `ANTHROPIC_API_KEY`
+(the model is set with `CIERRE_LLM_MODEL`, default `claude-sonnet-5-5`). Without a key every feature below falls
+back to the deterministic tool.
 
-- **Customer suggestion** for receipts the rules left unidentified. The model sees only the bank description and
+- **AI draft of the close write-up** (tab *AI draft*, one click, one call per close, about 20 seconds). From the
+  figures the tool already computed, the model drafts the summary for the Controller, each high exception in plain
+  words and one email per owner (Tax, Treasury, Billing, the account manager). It receives those computed facts
+  (folios, customer names, amounts, owners, deadlines), never UUIDs, bank accounts or bank references. The reply is
+  structured JSON (guaranteed by the API). **Every number and every folio in the draft must exist in the close**;
+  if one does not, the whole draft is discarded and the deterministic template is shown, with the reason. The check
+  covers figures and folios, not judgment: the draft is marked as such, nothing is sent or posted, and a reviewer
+  approves it (recorded in the audit log). Measured on the September case and on the surprise exam: both drafts
+  passed, with 35 and 33 numbers and 30 and 33 folios checked.
+
+- **Customer suggestion** (`--llm` or the sidebar checkbox) for receipts the rules left unidentified. The model sees only the bank description and
   the customer names, never amounts, accounts or UUIDs. Its answer must be one of the given ids, otherwise it is
   ignored. The suggestion only narrows the candidate invoices: matching and amounts are still done in code. The
   result is a level-2 proposal: it is never applied until a reviewer accepts it.
 - **Plain-language rewrite** of an exception. Any rewrite containing a number that is not in the original text is
   discarded.
 
-Every call is written to the audit log (model, prompt hash, response, accepted or not). Without a key the tool
-runs fully deterministic. Cost: one short call per unidentified receipt, usually zero to three per month.
+Every call is written to the audit log (model, prompt hash, response, accepted or not). Cost: one short call per
+unidentified receipt (usually zero to three per month) and one call per close for the draft; cents per month. No
+sampling parameters are sent (current models reject `temperature`): determinism comes from the fences, not from
+the sampler.
 
 How model errors are tested: `tests/test_asistente_llm.py` uses a fake client to prove that
 
@@ -184,9 +197,13 @@ How model errors are tested: `tests/test_asistente_llm.py` uses a fake client to
 - a rewrite with an invented number is dropped, and
 - every call is logged.
 
+`tests/test_redaccion.py` does the same for the draft: an invented figure or folio, a reply that is not JSON and a
+declined request all fall back to the template; a valid draft is accepted and logged; the call sends no
+`temperature`.
+
 ## Tests
 
-`python -m pytest -q` runs 314 tests:
+`python -m pytest -q` runs 324 tests:
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").
@@ -196,7 +213,8 @@ How model errors are tested: `tests/test_asistente_llm.py` uses a fake client to
   FX days. It also covers patterns the case does not have: one receipt for two invoices, an overpayment, and a
   cross-currency receipt with a small rate difference.
 - `test_asistente_llm.py`: the model guards.
-- `test_app.py`: the review UI.
+- `test_app.py`: the review UI, including the AI draft tab.
+- `test_redaccion.py`: the AI draft and its number-and-folio check.
 - `test_rfc_generico.py`: customers that share a generic RFC (XEXX010101000 foreign, XAXX010101000 general
   public) are told apart by RFC + name.
 
