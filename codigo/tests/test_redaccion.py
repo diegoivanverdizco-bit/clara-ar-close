@@ -7,9 +7,10 @@ from cierre_cxc.auditoria import Bitacora
 from test_asistente_llm import FakeCliente
 
 
-def _respuesta(resumen, explicacion="A-1008 sigue en cuentas por cobrar por 232,000.00.", cuerpo="Hola, revisa A-1008."):
+def _respuesta(resumen, que="A-1008 sigue en cuentas por cobrar por 232,000.00.", cuerpo="Hola, revisa A-1008."):
     return json.dumps({"resumen": resumen,
-                       "excepciones": [{"referencia": "A-1008", "explicacion": explicacion}],
+                       "decisiones": [{"id": "", "referencia": "A-1008", "que_pasa": que,
+                                       "solucion_sugerida": "Fiscal la sustituye por PPD.", "pregunta": "", "opciones": []}],
                        "correos": [{"para": "Fiscal", "asunto": "A-1008", "cuerpo": cuerpo}]}, ensure_ascii=False)
 
 
@@ -55,7 +56,7 @@ def test_sin_clave_api_usa_la_plantilla_con_correos_por_responsable(salida, monk
     assert r["origen"] == "plantilla" and "sin clave" in r["motivo"].lower()
     assert "1,759,932.85" in r["resumen"]
     assert {c["para"] for c in r["correos"]} >= {"Fiscal", "Tesorería"}
-    assert any(x["referencia"] == "A-1008" and x["explicacion"] for x in r["excepciones"])
+    assert any(x["referencia"] == "A-1008" and x["que_pasa"] and x["solucion_sugerida"] for x in r["decisiones"])
 
 
 class ClienteEstricto(FakeCliente):
@@ -77,3 +78,43 @@ def test_si_el_modelo_declina_se_usa_la_plantilla(salida):
     f.messages = SimpleNamespace(create=lambda **kw: SimpleNamespace(content=[], stop_reason="refusal"))
     r = redactar_cierre(salida, None, f)
     assert r["origen"] == "plantilla" and "1,759,932.85" in r["resumen"]
+
+
+def test_las_decisiones_traen_monto_y_responsable_del_cierre(salida):
+    r = redactar_cierre(salida, None, FakeCliente(_respuesta("La cartera cierra en 1,759,932.85 MXN.")))
+    d = r["decisiones"][0]
+    assert d["referencia"] == "A-1008" and d["monto_mxn"] == "232000.00" and d["responsable"] == "Fiscal"
+
+
+def test_los_criterios_del_revisor_llegan_a_la_ia(salida):
+    f = FakeCliente(_respuesta("La cartera cierra en 1,759,932.85 MXN."))
+    redactar_cierre(salida, None, f, criterios=["A-1012: la tasa 0 % no es exento."])
+    assert "la tasa 0 % no es exento" in f.llamadas[0]["messages"][0]["content"]
+
+
+def test_las_pistas_avisan_prestamo_y_rep_del_nivel_2(tmp_path):
+    from datetime import datetime
+    from cierre_cxc.pipeline import ejecutar
+    from test_b3_ronda1 import banco, libro, mxn
+    import uuid
+    facturas = [mxn("H-1", 1, 50000, cliente="Hotelera Riviera Maya SA de CV", rfc="HRM100101AA1"),
+                mxn("H-2", 5, 30000, cliente="Hotelera Riviera Maya SA de CV", rfc="HRM100101AA1")]
+    bancos = [banco(16, "SPEI RECIBIDO HOTELERA RIVIERA MAYA ABONO", abono=20000),
+              banco(19, "ABONO DISPOSICION CREDITO SIMPLE BBVA 4421", abono=500000)]
+    rep = ["R1", datetime(2026, 10, 16), str(uuid.uuid5(uuid.UUID("12345678-1234-5678-1234-567812345678"), "H-1")).upper(),
+           "H-1", 1, 58000, 20000, 38000, "MXN", 1]
+    s = ejecutar(libro(tmp_path / "p.xlsx", facturas, bancos, reps=[rep]))
+    pistas = " ".join(hechos_cierre(s)["pistas"])
+    assert "préstamo" in pistas and "B03" in pistas
+    assert "REP de H-1 corresponde al cobro por confirmar" in pistas
+
+
+def test_criterios_se_guardan_sin_repetir_y_se_pueden_quitar(tmp_path):
+    from cierre_cxc.criterios import Criterios
+    bit = Bitacora(tmp_path / "b.jsonl", "t")
+    k = Criterios(tmp_path / "c.json", bit)
+    k.aprender("IVA rate", "A-1012: la tasa 0 % no es exento.", "decision", "Diego")
+    k.aprender("IVA rate", "A-1012: la tasa 0 % no es exento.", "decision", "Diego")
+    assert Criterios(tmp_path / "c.json").textos() == ["A-1012: la tasa 0 % no es exento."]
+    assert k.quitar("K01", "Diego") and Criterios(tmp_path / "c.json").textos() == []
+    assert [e["evento"] for e in bit.leer()] == ["criterio_aprendido", "criterio_retirado"]

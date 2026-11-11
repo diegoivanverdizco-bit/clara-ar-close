@@ -1,6 +1,7 @@
 """Plain-Spanish wording for exceptions: the four families, who resolves each, one sentence per category and why
 it matters. Shared by the demo script and the AI draft (as its deterministic fallback). Text only: no amounts
 are computed here."""
+import re
 
 FAMILIAS = {
     "Dinero sin dueño": ["Unidentified cash", "Match to confirm", "Reference vs customer",
@@ -78,3 +79,6 @@ TIPO_DICE = {
     "multiple": "{mov} es un solo pago que cubre varias facturas, {folios}: el monto cuadra con la suma.",
     "sobrepago": "{mov} pagó de más a {folios}: el excedente se queda en la 2101 hasta saber si se devuelve o se aplica.",
 }
+
+# a bank credit that reads like a loan drawdown, not a customer payment
+PRESTAMO = re.compile(r"CREDITO|PRESTAMO|DISPOSICION|FINANCIAMIENTO", re.I)

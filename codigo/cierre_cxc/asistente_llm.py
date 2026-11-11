@@ -119,26 +119,37 @@ def redactar_explicacion(hecho: str, bitacora=None, cliente=None, modelo: str | 
 # 3. Draft of the close write-up, fenced by a number-and-folio check against the computed facts
 # ---------------------------------------------------------------------------------------------------------------
 SISTEMA_BORRADOR = (
-    "Eres analista de cuentas por cobrar en México. Recibes en JSON los hechos de un cierre mensual, ya calculados "
-    "por el sistema. Redacta en español neutral y profesional. Devuelve SOLO un objeto JSON con esta forma: "
-    "{\"resumen\": texto de máximo 120 palabras para el Controller, "
-    "\"excepciones\": [{\"id\": id de la excepción, \"referencia\": su referencia, \"explicacion\": máximo dos "
-    "frases simples: qué pasa y qué se hace}] solo para las de severidad alta, "
-    "\"correos\": [{\"para\": el responsable tal como viene en los hechos, \"asunto\": texto, \"cuerpo\": texto}] "
-    "un correo por responsable con sus acciones y fechas límite}. "
-    "Reglas: usa solo cifras, fechas y folios que aparecen en los hechos, escritos igual (montos con comas y dos "
-    "decimales, como 1,234.56). No calcules, no sumes, no redondees. No cites artículos ni reglas fiscales. Escribe "
-    "las cantidades pequeñas con letra (dos, tres). Si no sabes algo, no lo menciones."
+    "Eres analista de cuentas por cobrar en México y preparas el trabajo del revisor para que solo decida. Recibes en "
+    "JSON los hechos de un cierre mensual, ya calculados por el sistema. Redacta en español neutral y profesional, "
+    "corto y claro. Devuelve el JSON del esquema:\n"
+    "- resumen: máximo 120 palabras para el Controller.\n"
+    "- decisiones: una por cada excepción de severidad alta, en el orden de los hechos: que_pasa (una frase simple), "
+    "solucion_sugerida (qué hacer y quién, una o dos frases), pregunta (solo si la solución depende de un criterio que "
+    "debe decidir una persona; si no, cadena vacía) y opciones (dos o tres respuestas cortas a la pregunta; vacía si no "
+    "hay pregunta).\n"
+    "- correos: uno por responsable, con sus pendientes y fechas límite, listo para enviar.\n"
+    "Reglas, en este orden de prioridad:\n"
+    "1. criterios_del_revisor manda sobre todo lo demás.\n"
+    "2. Cada excepción trae criterio_verificado: explica con ese criterio y sus términos (no cambies conceptos "
+    "fiscales: por ejemplo, tasa 0 % no es lo mismo que exento).\n"
+    "3. pistas son conexiones que ya encontró el sistema (préstamos, un REP que corresponde a un cobro por confirmar, "
+    "un cobro aplicado a la factura más antigua cuyo monto apunta a otra): úsalas en la solución.\n"
+    "4. No agregues requisitos, plazos ni pasos que no estén en accion, criterio_verificado o pistas.\n"
+    "5. Usa solo cifras, fechas y folios que aparecen en los hechos, escritos igual (montos con comas y dos "
+    "decimales). No calcules, no sumes, no redondees. No cites artículos ni reglas fiscales. Cantidades pequeñas con "
+    "letra."
 )
 
 _TEXTO = {"type": "string"}
 ESQUEMA_BORRADOR = {
-    "type": "object", "additionalProperties": False, "required": ["resumen", "excepciones", "correos"],
+    "type": "object", "additionalProperties": False, "required": ["resumen", "decisiones", "correos"],
     "properties": {
         "resumen": _TEXTO,
-        "excepciones": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["id", "referencia", "explicacion"],
-            "properties": {"id": _TEXTO, "referencia": _TEXTO, "explicacion": _TEXTO}}},
+        "decisiones": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["id", "referencia", "que_pasa", "solucion_sugerida", "pregunta", "opciones"],
+            "properties": {"id": _TEXTO, "referencia": _TEXTO, "que_pasa": _TEXTO, "solucion_sugerida": _TEXTO,
+                           "pregunta": _TEXTO, "opciones": {"type": "array", "items": _TEXTO}}}},
         "correos": {"type": "array", "items": {
             "type": "object", "additionalProperties": False, "required": ["para", "asunto", "cuerpo"],
             "properties": {"para": _TEXTO, "asunto": _TEXTO, "cuerpo": _TEXTO}}},
@@ -160,12 +171,49 @@ def _valores(texto: str) -> set:
     return out
 
 
-def hechos_cierre(s) -> dict:
+def _m(x) -> str:
+    from decimal import Decimal
+    return f"{Decimal(x):,.2f}"
+
+
+def _pistas(s) -> list:
+    """Connections the engine already found, worded for the draft. Deterministic: the model only words them."""
+    from .familias import PRESTAMO
+    res, out = s.res, []
+    nivel2 = [u for u in res.efectivo_no_identificado if u.get("nivel") == 2]
+    candidata = {c["folio"]: u for u in nivel2 for c in u.get("candidatos", [])}
+    for u in res.efectivo_no_identificado:
+        if PRESTAMO.search(u.get("descripcion") or ""):
+            out.append(f"{u['mov_id']} ({_m(u['monto'])}, '{u['descripcion']}') parece un préstamo bancario, no un cobro "
+                       "de clientes: va como pasivo, sin IVA y sin CFDI; Tesorería confirma el contrato.")
+    for u in nivel2:
+        out.append(f"{u['mov_id']} ({_m(u['monto'])}) está por confirmar: el revisor elige entre "
+                   + ", ".join(c["folio"] for c in u.get("candidatos", [])) + ".")
+    for e in s.excepciones:
+        if e.categoria == "REP without bank" and e.referencia in candidata:
+            u = candidata[e.referencia]
+            out.append(f"El REP de {e.referencia} corresponde al cobro por confirmar {u['mov_id']}: se resuelve al "
+                       f"aceptar {e.referencia} para {u['mov_id']}; no hay que cancelar ese REP.")
+    for mov, p in res.propuestas.items():
+        otra = getattr(p, "orden_antiguo", "")
+        if otra:
+            aplicada = ", ".join(i[0].folio for i in p.items)
+            out.append(f"{mov} se aplicó a {aplicada} por ser la factura más antigua, pero su monto es igual a {otra}: "
+                       f"se pregunta al cliente; si indica {otra}, se reasigna y su REP queda bien.")
+    return out
+
+
+def hechos_cierre(s, criterios=None) -> dict:
     """The computed facts the draft may talk about. No UUIDs, bank accounts or bank references."""
-    from .familias import FAMILIA, RESPONSABLE
+    from .familias import FAMILIA, FRASE, PORQUE, RESPONSABLE
     from .exportar import conteo_niveles
     res = s.res
     altas = [e for e in s.excepciones if e.severidad == "alta"]
+
+    def criterio(e):
+        frase = FRASE.get(e.categoria, "").format(refs=e.referencia, monto=_m(e.monto_mxn))
+        return (frase + (" Importa porque " + PORQUE[e.categoria] if e.categoria in PORQUE else "")).strip()
+
     return {
         "periodo": {"inicio": str(res.inicio), "cierre": str(res.cierre)},
         "cifras": {"cuentas_por_cobrar_mxn": str(s.aging["total"]), "iva_cobrado_mxn": str(s.iva["cobrado"]),
@@ -175,6 +223,8 @@ def hechos_cierre(s) -> dict:
         "cobros_por_nivel": dict(conteo_niveles(s)),
         "plazos": {"REP": "día 5 del mes siguiente al pago", "declaracion_IVA": "día 17 del mes siguiente"},
         "tasa_general_iva_pct": "16",
+        "criterios_del_revisor": list(criterios or []),
+        "pistas": _pistas(s),
         "cobros_sin_aplicar": [{"movimiento": u["mov_id"], "fecha": str(u["fecha"]), "monto": str(u["monto"]),
                                 "moneda": u["moneda"], "descripcion": u["descripcion"], "nivel": u.get("nivel"),
                                 "candidatas": [c["folio"] for c in u.get("candidatos", [])]}
@@ -183,26 +233,20 @@ def hechos_cierre(s) -> dict:
         "excepciones": [{"id": e.id, "severidad": e.severidad, "categoria": e.categoria,
                          "familia": FAMILIA.get(e.categoria, "otra"), "referencia": e.referencia,
                          "monto_mxn": str(e.monto_mxn), "responsable": RESPONSABLE.get(e.responsable, e.responsable),
-                         "fecha_limite": str(e.fecha_limite), "que_pasa": e.que, "accion": e.accion}
+                         "fecha_limite": str(e.fecha_limite), "que_pasa": e.que, "accion": e.accion,
+                         "criterio_verificado": criterio(e)}
                         for e in s.excepciones],
     }
 
 
-def _m(x) -> str:
-    from decimal import Decimal
-    return f"{Decimal(x):,.2f}"
-
-
 def borrador_plantilla(s, h=None) -> dict:
     """Deterministic draft, used without an API key or when the model's draft fails the check."""
-    from .familias import FRASE, PORQUE
+    from .familias import FRASE
     h = h or hechos_cierre(s)
     altas = [e for e in h["excepciones"] if e["severidad"] == "alta"]
-    expl = []
-    for e in altas:
-        frase = FRASE.get(e["categoria"], e["que_pasa"]).format(refs=e["referencia"], monto=_m(e["monto_mxn"]))
-        expl.append({"id": e["id"], "referencia": e["referencia"], "familia": e["familia"],
-                     "explicacion": frase + (" Importa porque " + PORQUE[e["categoria"]] if e["categoria"] in PORQUE else "")})
+    decisiones = [{"id": e["id"], "referencia": e["referencia"],
+                   "que_pasa": FRASE.get(e["categoria"], e["que_pasa"]).format(refs=e["referencia"], monto=_m(e["monto_mxn"])),
+                   "solucion_sugerida": e["criterio_verificado"], "pregunta": "", "opciones": []} for e in altas]
     principales = sorted(altas, key=lambda e: -float(e["monto_mxn"]))[:3]
     resumen = (f"Cierre del {h['periodo']['inicio']} al {h['periodo']['cierre']}: cuentas por cobrar de "
                f"{_m(h['cifras']['cuentas_por_cobrar_mxn'])} MXN e IVA cobrado de {_m(h['cifras']['iva_cobrado_mxn'])} "
@@ -210,20 +254,20 @@ def borrador_plantilla(s, h=None) -> dict:
                "prioridad alta" + (": " + "; ".join(f"{e['categoria']} ({e['referencia']}, {_m(e['monto_mxn'])})"
                                                    for e in principales) if principales else "") + ".")
     por_resp = {}
-    for e, x in zip(altas, expl):
-        por_resp.setdefault(e["responsable"], []).append(f"- {x['explicacion'].split(' Importa porque')[0]} "
-                                                         f"Fecha límite: {e['fecha_limite']}.")
+    for e, d in zip(altas, decisiones):
+        por_resp.setdefault(e["responsable"], []).append(f"- {d['que_pasa']} Fecha límite: {e['fecha_limite']}.")
     correos = [{"para": r, "asunto": f"Pendientes del cierre al {h['periodo']['cierre']} ({len(ls)})",
                 "cuerpo": "Hola,\n\nDel cierre de cuentas por cobrar quedan estos pendientes a tu cargo:\n"
                           + "\n".join(ls) + "\n\nGracias."}
                for r, ls in por_resp.items()]
-    return {"resumen": resumen, "excepciones": expl, "correos": correos}
+    return {"resumen": resumen, "decisiones": decisiones, "correos": correos}
 
 
 def _verificar(borrador: dict, h: dict):
     """Every folio and number in the draft must appear in the facts. Returns (ok, reason, n_numbers, n_folios)."""
     textos = [borrador.get("resumen", "")]
-    textos += [x.get("explicacion", "") for x in borrador.get("excepciones", [])]
+    for d in borrador.get("decisiones", []):
+        textos += [d.get(k, "") for k in ("que_pasa", "solucion_sugerida", "pregunta")] + list(d.get("opciones", []))
     textos += [c.get(k, "") for c in borrador.get("correos", []) for k in ("para", "asunto", "cuerpo")]
     texto = "\n".join(str(x) for x in textos)
     hechos_txt = json.dumps(h, ensure_ascii=False)
@@ -231,8 +275,7 @@ def _verificar(borrador: dict, h: dict):
     ajenos = sorted(f for f in folios if f not in hechos_txt)
     if ajenos:
         return False, "folio(s) not in the close: " + ", ".join(ajenos), 0, len(folios)
-    sin_folios = _FOLIO.sub(" ", texto)
-    nums = _valores(sin_folios)
+    nums = _valores(_FOLIO.sub(" ", texto))
     permitidos = _valores(_FOLIO.sub(" ", hechos_txt)) | _valores(hechos_txt)
     inventados = sorted(nums - permitidos)
     if inventados:
@@ -240,19 +283,32 @@ def _verificar(borrador: dict, h: dict):
     return True, "", len(nums), len(folios)
 
 
-def redactar_cierre(s, bitacora=None, cliente=None, modelo: str | None = None) -> dict:
-    """Draft of the close write-up. The model writes; the code checks; a person approves."""
-    h = hechos_cierre(s)
+def redactar_cierre(s, bitacora=None, cliente=None, modelo: str | None = None, criterios=None) -> dict:
+    """Draft of the close write-up. The model words it with the reviewer's criteria; the code checks; a person decides."""
+    h = hechos_cierre(s, criterios)
     cliente = cliente or _cliente_anthropic()
     modelo = modelo or os.environ.get("CIERRE_LLM_MODEL", MODELO_DEFECTO)
+    altas = {e["id"]: e for e in h["excepciones"] if e["severidad"] == "alta"}
+
+    def completar(b):
+        por_ref = {e["referencia"]: e for e in altas.values()}
+        out = []
+        for d in b.get("decisiones", []):
+            e = altas.get(d.get("id")) or por_ref.get(d.get("referencia"))
+            if e:
+                out.append({**d, "id": e["id"], "referencia": e["referencia"], "categoria": e["categoria"],
+                            "familia": e["familia"], "monto_mxn": e["monto_mxn"], "responsable": e["responsable"],
+                            "fecha_limite": e["fecha_limite"], "opciones": list(d.get("opciones") or [])})
+        return {**b, "decisiones": out, "correos": list(b.get("correos") or [])}
 
     def salida(origen, aceptado, motivo, b, nn=0, nf=0):
         if bitacora:
             bitacora.registrar("llm_draft", modelo=modelo if cliente else None, origen=origen, aceptado=aceptado,
-                               motivo=motivo or None, numeros=nn, folios=nf,
+                               motivo=motivo or None, numeros=nn, folios=nf, criterios=len(h["criterios_del_revisor"]),
                                prompt_sha=hashlib.sha256(json.dumps(h, ensure_ascii=False).encode()).hexdigest()[:12])
-        return {**b, "origen": origen, "aceptado": aceptado, "motivo": motivo,
-                "verificados": {"numeros": nn, "folios": nf}, "modelo": modelo if cliente else None}
+        return {**completar(b), "origen": origen, "aceptado": aceptado, "motivo": motivo,
+                "verificados": {"numeros": nn, "folios": nf}, "modelo": modelo if cliente else None,
+                "pistas": h["pistas"]}
 
     if cliente is None:
         return salida("plantilla", False, "Sin clave de API: se usó la plantilla.", borrador_plantilla(s, h))
@@ -268,7 +324,4 @@ def redactar_cierre(s, bitacora=None, cliente=None, modelo: str | None = None) -
     ok, motivo, nn, nf = _verificar(b, h)
     if not ok:
         return salida("plantilla", False, "Draft rejected: " + motivo, borrador_plantilla(s, h), nn, nf)
-    familia = {e["referencia"]: e["familia"] for e in h["excepciones"]}
-    b["excepciones"] = [{**x, "familia": familia.get(x.get("referencia"), "")} for x in b.get("excepciones", [])]
-    b.setdefault("correos", [])
     return salida("ia", True, "", b, nn, nf)

@@ -168,16 +168,19 @@ The model writes and suggests; the code computes and checks; a person approves. 
 (the model is set with `CIERRE_LLM_MODEL`, default `claude-sonnet-5-5`). Without a key every feature below falls
 back to the deterministic tool.
 
-- **AI draft of the close write-up** (tab *AI draft*, one click, one call per close, about 20 seconds). From the
-  figures the tool already computed, the model drafts the summary for the Controller, each high exception in plain
-  words and one email per owner (Tax, Treasury, Billing, the account manager). It receives those computed facts
-  (folios, customer names, amounts, owners, deadlines), never UUIDs, bank accounts or bank references. The reply is
-  structured JSON (guaranteed by the API). **Every number and every folio in the draft must exist in the close**;
-  if one does not, the whole draft is discarded and the deterministic template is shown, with the reason. The check
-  covers figures and folios, not judgment: the draft is marked as such, nothing is sent or posted, and a reviewer
-  approves it (recorded in the audit log). Measured on the September case and on the surprise exam: both drafts
-  passed, with 35 and 33 numbers and 30 and 33 folios checked.
-
+- **AI draft of the close write-up** (tab *AI draft*, one click, one call per close, 20 to 30 seconds). It
+  prepares the reviewer's work so the reviewer only decides: (1) a summary for the Controller, (2) one card per high
+  exception with what happens, a suggested solution and, when the case needs judgment, a question with two or three
+  options, and (3) one email per owner, ready to copy (nothing is sent). The model receives the figures the tool
+  already computed (folios, customer names, amounts, owners, deadlines), never UUIDs, bank accounts or bank
+  references; plus the verified wording of each exception, the reviewer's past decisions, and the connections the
+  code already found (a loan drawdown, a REP that belongs to a receipt waiting for confirmation, a receipt applied
+  to the oldest invoice whose amount points to another). The reply is structured JSON (guaranteed by the API).
+  **Every number and every folio in the draft must exist in the close**; if one does not, the whole draft is
+  discarded and the deterministic template is shown, with the reason. The check covers figures and folios, not
+  judgment: that is why the reviewer accepts or rejects each card. Each decision goes to the audit log, and the
+  reviewer's choices and reasons are kept in `criterios_aprendidos.json` so the next draft follows them (they can be
+  removed; they only steer wording, never amounts).
 - **Customer suggestion** (`--llm` or the sidebar checkbox) for receipts the rules left unidentified. The model sees only the bank description and
   the customer names, never amounts, accounts or UUIDs. Its answer must be one of the given ids, otherwise it is
   ignored. The suggestion only narrows the candidate invoices: matching and amounts are still done in code. The
@@ -203,7 +206,7 @@ declined request all fall back to the template; a valid draft is accepted and lo
 
 ## Tests
 
-`python -m pytest -q` runs 324 tests:
+`python -m pytest -q` runs 328 tests:
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").

@@ -57,19 +57,28 @@ def _app_borrador(datos_caso, tmp_path, monkeypatch, cliente):
     return at
 
 
-def test_borrador_con_ia_verificado_se_muestra_y_se_aprueba(datos_caso, tmp_path, monkeypatch):
+def test_borrador_con_ia_se_decide_aprende_y_queda_en_bitacora(datos_caso, tmp_path, monkeypatch):
     from test_asistente_llm import FakeCliente
-    resp = json.dumps({"resumen": "La cartera cierra en 1,759,932.85 MXN.", "excepciones": [],
-                       "correos": [{"para": "Fiscal", "asunto": "A-1008", "cuerpo": "Revisa A-1008."}]})
-    at = _app_borrador(datos_caso, tmp_path, monkeypatch, FakeCliente(resp))
-    assert any("verified" in s.value for s in at.success)
-    next(b for b in at.button if b.key == "ia_aprobar").click().run()
+    resp = json.dumps({"resumen": "La cartera cierra en 1,759,932.85 MXN.",
+                       "decisiones": [{"id": "", "referencia": "A-1012", "que_pasa": "A-1012 lleva tasa 0 %.",
+                                       "solucion_sugerida": "Fiscal confirma la tasa.", "pregunta": "¿Aplica el 0 %?",
+                                       "opciones": ["Sí, se queda", "No, se emite de nuevo al 16 %"]}],
+                       "correos": [{"para": "Fiscal", "asunto": "A-1012", "cuerpo": "Revisa A-1012."}]})
+    fake = FakeCliente(resp)
+    at = _app_borrador(datos_caso, tmp_path, monkeypatch, fake)
+    assert any("Checked" in s.value for s in at.success)
+    assert at.text_area(key="ia_resumen").value.startswith("La cartera cierra en 1,759,932.85")
+    at.radio(key="ia_op_0").set_value("No, se emite de nuevo al 16 %").run()
+    next(b for b in at.button if b.key == "ia_ok_0").click().run()
     eventos = [json.loads(l) for l in (tmp_path / "bitacora_auditoria.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert any(e["evento"] == "llm_draft" and e["aceptado"] for e in eventos)
-    assert any(e["evento"] == "draft_approved" and e["usuario"] == "Diego" for e in eventos)
+    assert any(e["evento"] == "ai_decision" and e["aceptada"] and e["usuario"] == "Diego" for e in eventos)
+    assert any(e["evento"] == "criterio_aprendido" for e in eventos)
+    # the next draft carries the reviewer's decision to the model
+    next(b for b in at.button if b.key == "ia_borrador").click().run()
+    assert "se emite de nuevo al 16 %" in fake.llamadas[-1]["messages"][0]["content"]
 
 
 def test_borrador_sin_clave_muestra_la_plantilla(datos_caso, tmp_path, monkeypatch):
     at = _app_borrador(datos_caso, tmp_path, monkeypatch, None)
     assert any("Template" in w.value for w in at.warning)
-    assert any("1,759,932.85" in m.value for m in at.markdown)
+    assert "1,759,932.85" in at.text_area(key="ia_resumen").value

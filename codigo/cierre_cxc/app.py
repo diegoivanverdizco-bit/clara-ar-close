@@ -18,6 +18,7 @@ if str(RAIZ) not in sys.path:
 
 from cierre_cxc.aprendizaje import Reglas                                    # noqa: E402
 from cierre_cxc.asistente_llm import redactar_cierre                         # noqa: E402
+from cierre_cxc.criterios import Criterios                                   # noqa: E402
 from cierre_cxc.auditoria import Bitacora, sha256_archivo                    # noqa: E402
 from cierre_cxc.cargar import SchemaError                                    # noqa: E402
 from cierre_cxc.cli import claves_revisables                                 # noqa: E402
@@ -235,36 +236,80 @@ with tabs[5]:
     st.dataframe(pd.DataFrame(bit.leer()).astype(str), width="stretch", hide_index=True)
 
 with tabs[6]:
-    st.caption("Optional. One call to the language model with the figures the tool already computed. It drafts the "
-               "summary for the Controller, each high exception in plain words and one email per owner. Every number "
-               "and folio in the draft is checked against the close; if one is not there, the template is used. It is "
-               "a draft: nothing is sent or posted, and a reviewer approves it.")
-    if st.button("Draft with AI", key="ia_borrador"):
-        with st.spinner("Drafting..."):
-            st.session_state["borrador_ia"] = redactar_cierre(s, bit)
+    criterios = Criterios(salida / "criterios_aprendidos.json", bit)
+    st.caption("The AI drafts, the code checks every number and folio against the close, and you decide. "
+               "Nothing is sent or posted from here.")
+    if any(u.get("nivel") == 2 for u in s.res.efectivo_no_identificado):
+        st.info("Tip: accept the level-2 receipts in A1 first, so the draft uses your choice.")
+    if st.button("Draft with AI", key="ia_borrador", type="primary"):
+        with st.spinner("Drafting (about 20 seconds)..."):
+            st.session_state["borrador_ia"] = redactar_cierre(s, bit, criterios=criterios.textos())
+            st.session_state["decisiones_ia"] = {}
     b = st.session_state.get("borrador_ia")
     if b:
+        hechas = st.session_state.setdefault("decisiones_ia", {})
         if b["origen"] == "ia":
-            st.success(f"AI draft verified: {b['verificados']['numeros']} numbers and {b['verificados']['folios']} "
-                       f"folios match the close (model {b['modelo']}). Check the wording before approving.")
+            st.success(f"Checked: all {b['verificados']['numeros']} numbers and {b['verificados']['folios']} folios "
+                       "match the close.")
         else:
-            st.warning(f"Template draft (no AI text was used): {b['motivo']}")
-        st.subheader("Summary for the Controller")
-        st.markdown(b["resumen"])
-        if b["excepciones"]:
-            st.subheader("High exceptions in plain words")
-            st.dataframe(pd.DataFrame([{"referencia": x.get("referencia", ""), "familia": x.get("familia", ""),
-                                        "explicacion": x.get("explicacion", "")} for x in b["excepciones"]]),
-                         width="stretch", hide_index=True)
-        if b["correos"]:
-            st.subheader("Draft emails (not sent)")
-            for i, c in enumerate(b["correos"]):
-                with st.expander(f"To: {c['para']} - {c['asunto']}"):
-                    st.text_area("Body", c["cuerpo"], key=f"correo_{i}", height=220)
-        if st.button("Approve draft as " + (usuario or "..."), key="ia_aprobar", disabled=not usuario):
-            bit.registrar("draft_approved", origen=b["origen"], modelo=b.get("modelo"),
+            st.warning(f"Template draft (the AI text was not used): {b['motivo']}")
+
+        st.subheader("1. Summary for the Controller")
+        st.text_area("Summary", b["resumen"], key="ia_resumen", height=140, label_visibility="collapsed")
+        if st.button("Approve summary", key="ia_aprobar", disabled=not usuario):
+            bit.registrar("draft_approved", parte="resumen", origen=b["origen"], modelo=b.get("modelo"),
                           numeros=b["verificados"]["numeros"], folios=b["verificados"]["folios"])
-            st.success("Draft approved and recorded in the audit log.")
+            st.success("Summary approved (audit log).")
+
+        st.subheader(f"2. Decide ({len(hechas)} of {len(b['decisiones'])} done)")
+        for i, d in enumerate(b["decisiones"]):
+            with st.container(border=True):
+                st.markdown(f"**{d['referencia']}** · {d['familia']} · {float(d['monto_mxn']):,.2f} MXN · "
+                            f"{d['responsable']} · due {d['fecha_limite']}")
+                st.markdown(f"**What happens:** {d['que_pasa']}")
+                st.markdown(f"**Suggested:** {d['solucion_sugerida']}")
+                hecho = hechas.get(d["id"])
+                if hecho:
+                    st.markdown(("✅ Accepted" if hecho["aceptada"] else "❌ Rejected")
+                                + (f": {hecho['opcion']}" if hecho.get("opcion") else "")
+                                + (f" ({hecho['comentario']})" if hecho.get("comentario") else ""))
+                    continue
+                opcion = None
+                if d.get("pregunta") and d.get("opciones"):
+                    opcion = st.radio(d["pregunta"], d["opciones"], index=None, key=f"ia_op_{i}")
+                cols = st.columns([5, 1.4, 1.4])
+                com = cols[0].text_input("Reason", key=f"ia_com_{i}", label_visibility="collapsed",
+                                         placeholder="Reason (optional; the next draft learns from it)")
+                for col, aceptada, etiqueta in ((cols[1], True, "Accept"), (cols[2], False, "Reject")):
+                    if col.button(etiqueta, key=f"ia_{'ok' if aceptada else 'no'}_{i}", disabled=not usuario):
+                        hechas[d["id"]] = {"aceptada": aceptada, "opcion": opcion, "comentario": com}
+                        bit.registrar("ai_decision", excepcion=d["id"], referencia=d["referencia"],
+                                      aceptada=aceptada, opcion=opcion, comentario=com or None)
+                        if opcion:
+                            criterios.aprender(d["categoria"], f"{d['referencia']} ({d['categoria']}): ante "
+                                               f"'{d['pregunta']}' el revisor eligió '{opcion}'. {com}", "decision", usuario)
+                        elif com:
+                            criterios.aprender(d["categoria"], f"{d['referencia']} ({d['categoria']}): {com}",
+                                               "rechazo" if not aceptada else "comentario", usuario)
+                        st.rerun()
+
+        st.subheader("3. Emails (drafts, not sent)")
+        for i, c in enumerate(b["correos"]):
+            with st.expander(f"To: {c['para']} · {c['asunto']}"):
+                st.text_area("Body", c["cuerpo"], key=f"correo_{i}", height=220, label_visibility="collapsed")
+                if st.button("Approve email", key=f"ia_correo_{i}", disabled=not usuario):
+                    bit.registrar("draft_approved", parte="correo", para=c["para"], origen=b["origen"])
+                    st.success("Email approved (audit log). Copy it into your mail.")
+
+    aprendidos = criterios.activos()
+    if aprendidos:
+        with st.expander(f"What the AI follows from your past decisions ({len(aprendidos)})"):
+            for k in aprendidos:
+                c1, c2 = st.columns([8, 1])
+                c1.markdown(f"`{k['id']}` {k['texto']}")
+                if c2.button("Remove", key=f"ia_quitar_{k['id']}", disabled=not usuario):
+                    criterios.quitar(k["id"], usuario)
+                    st.rerun()
 
 st.divider()
 if usuario and st.button("Approve every pending item as " + usuario):
