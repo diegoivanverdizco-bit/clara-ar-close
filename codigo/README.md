@@ -47,6 +47,9 @@ python -m cierre_cxc reject-correction A-1013 --datos "path/to/Case_Data.xlsx" -
 python -m cierre_cxc approve --datos "path/to/Case_Data.xlsx" --items all --usuario "Diego"
 python -m cierre_cxc run --datos "path/to/Case_Data.xlsx" --usuario "Diego"   # -> ..._APROBADO.xlsx
 
+# 3. journal entries for NetSuite's CSV Import Assistant (draft until everything is approved)
+python -m cierre_cxc netsuite --datos "path/to/Case_Data.xlsx" --usuario "Diego"   # -> YYYY-MM_polizas_netsuite.csv
+
 # tests
 python -m pytest -q
 ```
@@ -119,7 +122,7 @@ of 69.6 does not fit when the others go from 15,000.00 to 556,800.00. It never w
 value and never preselects: the reviewer still chooses. A suggestion is dropped when its option is not one of that
 error's candidates or its reason has a number that is not in the error or its options. Without a key, or if the call
 fails, there are no suggestions and the table stays the same. The call is logged (`llm_call`, `uso: correcciones`)
-and each approval records what the AI had suggested (`ia_sugirio`). 438 tests run (`python -m pytest -q` in
+and each approval records what the AI had suggested (`ia_sugirio`). 452 tests run (`python -m pytest -q` in
 `codigo/`).
 
 ## Receipts the rules cannot place: three levels
@@ -179,6 +182,33 @@ output, sheet `Learned_Rules`). Next month the same payer is level 1. Safeguards
 | `A5_IVA_Collected` / `A5_IVA_Roll_Forward` | IVA cobrado at the FIX of the collection date and the IVA por trasladar bridge |
 | `Learned_Rules` | Payers learned from reviewers' decisions: words, customer, who taught it and from which receipt |
 | `Audit_Log` | Runs (with the SHA-256 of the input file), decisions, overrides, learned rules, exports and language-model calls |
+| `YYYY-MM_polizas_netsuite.csv` | `netsuite` command or **Build NetSuite CSV** on the screen: the journal entries for NetSuite (below) |
+
+### Journal entries for NetSuite
+
+`netsuite` writes the same entries as `A3_Journal_Entries` (nothing is recomputed) in the one-file format of
+NetSuite's CSV Import Assistant for Journal Entries: one row per line, the header repeated on every row, and the same
+`External ID` (`CXC-202609-P02`) on every line of an entry. Columns: `External ID`, `Date`, `Memo`, `Reversal Date`,
+`Journal Entry - Line: Account`, `Journal Entry - Line: Debit`, `Journal Entry - Line: Credit`,
+`Journal Entry - Line: Memo` (and `Subsidiary` with `--subsidiaria`).
+
+- **Only entries NetSuite accepts.** An entry that does not balance, or has a line with a negative amount, no amount,
+  or both a debit and a credit, is left out and the reason is printed; it is never exported.
+- **Final only when approved.** While anything is pending review or a check fails, the file is
+  `..._polizas_netsuite_BORRADOR.csv`: to check, not to import.
+- **Unrealized FX reverses by itself.** Revaluation entries carry `Reversal Date` = the first day of the next period,
+  so NetSuite reverses them as the entry says.
+- **Accounts.** By default `1101 Bancos MXN` (number and name: needs NetSuite's "Use Account Numbers"). With
+  `--cuentas mapping.csv` (columns `cuenta,netsuite`) each account goes to Clara's NetSuite account; an account missing
+  from the mapping stops the export, so nothing lands in a wrong account.
+- **To confirm with the NetSuite administrator** (not in Oracle's documentation): amounts are MXN, the base currency,
+  so `Currency` and `Exchange Rate` are left out (blank means base currency at 1.00); dates are DD/MM/YYYY; an entry
+  that touches the USD bank account (1102) may have to be in USD in NetSuite. It was not tried against a real NetSuite
+  account. Format sources: Oracle NetSuite help, sections 1534492479 (header), 1534492737 (lines) and 1534489651 (CSV).
+- Each export is logged (`export_netsuite`: file, SHA-256, draft or final, entries, lines, entries left out).
+- Measured: with the case file, the holdout, October and the practice exam every entry balances and matches the Excel
+  entry by entry; the practice exam with an input error, corrected with `fix --seguras`, gives the same CSV byte for
+  byte as the exam corrected by hand.
 
 ## Architecture
 
@@ -265,13 +295,15 @@ declined request all fall back to the template; a valid draft is accepted and lo
 
 ## Tests
 
-`python -m pytest -q` runs 438 tests (5 skip here: they need practice workbooks that are not in this repository):
+`python -m pytest -q` runs 452 tests (5 skip here: they need practice workbooks that are not in this repository):
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").
 - `test_todos_los_errores.py`: several errors in one file are all listed in one run, without repeats.
 - `test_correcciones.py`: the category and candidates proposed for each kind of input error.
 - `test_corregir.py`: `fix`: the copy, the approvals and their audit log, the second check and the close on the copy.
+- `test_netsuite.py`: the NetSuite CSV: same figures as the Excel, every entry balances, entries NetSuite would reject
+  are left out, draft until approved, revaluation reversal date, account mapping.
 - `test_niveles.py`: the three levels, accepting a candidate, and learned rules (learning, replacing, removing,
   conflicts, a damaged rules file).
 - `test_dataset_nuevo.py`: a synthetic October dataset with other customers, other header spellings and missing
@@ -327,7 +359,8 @@ Accepted risks (approved by Diego, 2026-11-09). Each has a notice or a person in
 2. Store review state and the audit log in a database with SSO, so approvals are tied to real identities.
 3. Generate the missing REPs as drafts for the tax team.
 4. Learn more from reviewers: per-customer payment habits (who pays net of fees, who pays FIFO) to rank candidates.
-5. Post approved entries to the ERP through its API, with the entry id written back to the audit log.
+5. Post approved entries to NetSuite through its API (today: the CSV for the Import Assistant), with the entry id
+   written back to the audit log.
 
 ## Security
 

@@ -108,7 +108,7 @@ def correcciones_en_pantalla(problemas, ruta, origen):
         opciones[pid] = ["Leave as is"] + [f"{i}) {c.que}" + (f" - {c.porque}" if c.porque else "")
                                            for i, c in enumerate(p.candidatos, start=1)]
         if pid in sug:
-            st.caption(f"AI suggests option {sug[pid]['opcion']}: {_md(sug[pid]['porque'])}")
+            st.info(f"AI suggests option {sug[pid]['opcion']}: {_md(sug[pid]['porque'])}")
         cols = st.columns([5, 1.5])
         cols[0].selectbox(f"{pid}: which correction?", opciones[pid], key=f"fix_sel_{pid}")
         cols[1].checkbox("Reject", key=f"fix_rech_{pid}")
@@ -264,6 +264,31 @@ def exportar_excel(key):
         bit.registrar("export", archivo=xlsx.name, sha256=sha256_archivo(xlsx),
                       pendientes=len(rev.pendientes(claves)), borrador=borrador)
         st.download_button("Download " + nombre, xlsx.read_bytes(), file_name=nombre, key=key + "_dl")
+
+
+def exportar_netsuite(key):
+    """The journal entries as a CSV for NetSuite's CSV Import Assistant: the same entries as the Excel. While anything
+    is pending or a check fails it is a draft, to check and not to import. Logged in the audit log."""
+    from cierre_cxc import netsuite
+    borrador = bool(rev.pendientes(claves)) or not s.controles_ok
+    nombre = netsuite.nombre(s, borrador)
+    if st.button("Build NetSuite CSV", key=key, help="Journal entries for NetSuite's CSV Import Assistant (MXN, "
+                 "accounts as 'number name'). Final only when everything is approved."):
+        try:
+            ruta, datos, omitidas = netsuite.escribir(s, salida, borrador)
+        except PermissionError:
+            st.error(f"Cannot write {nombre}: it is open in another program. Close it and try again.")
+            return
+        polizas = len({f["External ID"] for f in datos})
+        bit.registrar("export_netsuite", archivo=ruta.name, sha256=sha256_archivo(ruta), borrador=borrador,
+                      pendientes=len(rev.pendientes(claves)), polizas=polizas, lineas=len(datos),
+                      omitidas=[list(o) for o in omitidas])
+        st.caption(f"{polizas} entries, {len(datos)} lines, every one balanced (debits = credits).")
+        for pid, motivo in omitidas:
+            st.error(f"{pid} left out: {motivo}")
+        if borrador:
+            st.warning("DRAFT: some items are pending review or a check fails. Check it, do not import it.")
+        st.download_button("Download " + nombre, ruta.read_bytes(), file_name=nombre, key=key + "_dl")
 
 
 def mostrar_hecho(clave, titulo):
@@ -449,6 +474,7 @@ def tarjetas_inicio():
             rev.decidir(c, "aprobado", usuario, "approved with the rest in Start here")
         st.rerun()
     exportar_excel("si_excel")
+    exportar_netsuite("si_netsuite")
 
 
 tabs = st.tabs(["Start here", "A1 Cash application", "A2 Exceptions", "A3 Journal entries", "A4 Aging", "A5 IVA",
@@ -630,3 +656,4 @@ if usuario and st.button("Approve every pending item as " + usuario):
         rev.decidir(c, "aprobado", usuario, "bulk approval in UI")
     st.rerun()
 exportar_excel("excel")
+exportar_netsuite("netsuite")

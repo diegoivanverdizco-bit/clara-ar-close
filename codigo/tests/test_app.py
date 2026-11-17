@@ -271,7 +271,7 @@ def test_la_ia_sugiere_una_opcion_pero_la_persona_elige_y_la_bitacora_lo_registr
     at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (B, 4, 6, "1,500"))
     assert fake.llamadas == []                                               # only when the reviewer asks
     _boton(at, "fix_ia").click().run()
-    assert any("AI suggests option 1" in c.value and "1.5 pesos" in c.value for c in at.caption)
+    assert any("AI suggests option 1" in i.value and "1.5 pesos" in i.value for i in at.info)   # visible, not grey
     sel = next(s for s in at.selectbox if s.key == "fix_sel_P1")
     assert sel.value == "Leave as is"                                        # the AI never preselects
     sel.set_value(sel.options[1]).run()
@@ -289,4 +289,22 @@ def test_sin_clave_la_ia_no_sugiere_y_la_tabla_sigue_igual(datos_caso, tmp_path,
     _boton(at, "fix_ia").click().run()
     assert not at.exception
     assert any("no suggestion" in c.value for c in at.caption)
-    assert not any("AI suggests" in c.value for c in at.caption)
+    assert not any("AI suggests" in i.value for i in at.info)
+
+
+def test_el_boton_de_netsuite_escribe_el_csv_en_borrador_y_lo_registra(datos_caso, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["app", "--datos", str(datos_caso), "--salida", str(tmp_path)])
+    at = AppTest.from_file(str(RAIZ / "cierre_cxc" / "app.py"), default_timeout=90).run()
+    _boton(at, "netsuite").click().run()
+    assert not at.exception
+    assert (tmp_path / "2026-09_polizas_netsuite_BORRADOR.csv").exists()
+    (e,) = _eventos(tmp_path, "export_netsuite")
+    assert e["borrador"] is True and e["polizas"] == 27 and e["omitidas"] == []
+    assert any("DRAFT" in w.value for w in at.warning)
+
+
+def test_start_here_tambien_tiene_el_boton_de_netsuite(datos_caso, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["app", "--datos", str(datos_caso), "--salida", str(tmp_path)])
+    at = AppTest.from_file(str(RAIZ / "cierre_cxc" / "app.py"), default_timeout=90).run()
+    _boton(at, "si_netsuite").click().run()
+    assert not at.exception and (tmp_path / "2026-09_polizas_netsuite_BORRADOR.csv").exists()

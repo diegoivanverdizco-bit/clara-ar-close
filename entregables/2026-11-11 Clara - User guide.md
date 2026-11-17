@@ -13,6 +13,8 @@ How to run the month-end AR close with the tool and review it. Setup and archite
    workbook and run again. Never edit the Excel the tool produces.
 4. **Review** in the browser (`python -m cierre_cxc ui --datos <file.xlsx>`) or with the commands below.
 5. The close is final only when the file is called `..._APROBADO.xlsx`.
+6. **Journal entries for NetSuite:** `netsuite --datos <file.xlsx> --salida <folder>` or **Build NetSuite CSV** on
+   the screen. Import only `YYYY-MM_polizas_netsuite.csv`; a `_BORRADOR` file means something is still pending.
 
 ## Input errors: approve the corrections
 

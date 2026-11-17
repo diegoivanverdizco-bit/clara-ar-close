@@ -246,3 +246,19 @@ def test_los_candidatos_los_calcula_el_codigo_sin_ia(saboteado, monkeypatch):
     monkeypatch.setattr(llm, "_cliente_anthropic", lambda: (_ for _ in ()).throw(AssertionError("LLM called")))
     p = uno(saboteado(celda(C, 2, 9, 16)))
     assert p.categoria == "a"
+
+
+def test_un_error_de_cruce_muestra_la_celda_que_cambian_todas_sus_propuestas(datos_caso, tmp_path):
+    # The CFDI rate check looks at the whole row, so it had no cell; every proposal changes the rate cell (G5)
+    import openpyxl
+    from cierre_cxc.cargar import SchemaError, cargar
+    wb = openpyxl.load_workbook(datos_caso)
+    ws = wb["CFDI_Emitidos"]
+    ws["G5"] = round(float(ws["G5"].value) / 10, 4)
+    ruta = tmp_path / "caso.xlsx"
+    wb.save(ruta)
+    with pytest.raises(SchemaError) as e:
+        cargar(ruta)
+    (p,) = e.value.problemas
+    assert p.codigo == "tc_fuera_rango" and {c.celda for k in p.candidatos for c in k.cambios} == {"G5"}
+    assert p.celda == "G5" and p.valor == ws["G5"].value         # the table shows the cell and what it says

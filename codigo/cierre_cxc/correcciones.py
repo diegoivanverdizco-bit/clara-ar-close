@@ -57,6 +57,13 @@ def proponer(p) -> None:
         p.categoria, p.candidatos = res[0], candidatos
     else:
         p.categoria, p.candidatos = "c", []
+    # A cross check looks at the whole row and has no cell; when every proposal changes the same cell, that is it
+    celdas = {(c.hoja, c.celda) for k in p.candidatos for c in k.cambios}
+    if not p.celda and len(celdas) == 1 and next(iter(celdas))[0] == p.hoja and all(
+            k.cambios and not (k.quitar_fila or k.agregar_fila) for k in p.candidatos):
+        p.celda = celdas.pop()[1]
+        if p.valor is None:
+            p.valor = p.candidatos[0].cambios[0].antes      # what the cell says, for the table
 
 
 # ---- helpers --------------------------------------------------------------------------------------------

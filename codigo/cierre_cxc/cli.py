@@ -94,6 +94,40 @@ def cmd_run(args) -> int:
     return 0 if s.controles_ok else 2
 
 
+def cmd_netsuite(args) -> int:
+    """Write the close's journal entries as a CSV for NetSuite's CSV Import Assistant. Final only when everything is
+    approved and the checks pass; otherwise a _BORRADOR file to check, not to import."""
+    from . import netsuite
+    try:
+        mapa = netsuite.leer_mapa(args.cuentas) if args.cuentas else None
+    except (OSError, ValueError) as e:
+        print(f"Input error: cannot read the account mapping: {e}", file=sys.stderr)
+        return 1
+    salida, bit, rev = _preparar(args)
+    s = _correr(args, bit, rev)
+    pend = rev.pendientes(claves_revisables(s))
+    borrador = bool(pend) or not s.controles_ok
+    try:
+        ruta, datos, omitidas = netsuite.escribir(s, salida, borrador, mapa, args.subsidiaria or "")
+    except ValueError as e:
+        print(f"Input error: {e}", file=sys.stderr)
+        return 1
+    except PermissionError:
+        print(f"Cannot write {netsuite.nombre(s, borrador)}: it is open in another program. Close it and try again.",
+              file=sys.stderr)
+        return 1
+    polizas = len({f["External ID"] for f in datos})
+    bit.registrar("export_netsuite", archivo=ruta.name, sha256=sha256_archivo(ruta), borrador=borrador,
+                  pendientes=len(pend), polizas=polizas, lineas=len(datos), omitidas=[list(o) for o in omitidas])
+    print(f"NetSuite journal entries: {polizas} entries, {len(datos)} lines, every one balanced. File: {ruta}")
+    for pid, motivo in omitidas:
+        print(f"  Left out {pid}: {motivo}")
+    if borrador:
+        motivo = f"{len(pend)} item(s) pending review" if pend else "some internal checks fail"
+        print(f"DRAFT ({motivo}): check it, do not import it. Approve everything and run again for the final file.")
+    return 0
+
+
 def cmd_approve(args) -> int:
     if not args.usuario:
         print("A reviewer name is required (--usuario).", file=sys.stderr)
@@ -316,6 +350,11 @@ def construir_parser():
     fx.add_argument("--elegir", default="", help="Corrections to approve with their candidate, e.g. P2=1,P5=2")
     fx.add_argument("--rechazar", default="", help="Corrections to reject, e.g. P3,P4")
     fx.add_argument("--comentario", default=""); fx.set_defaults(fn=cmd_fix)
+    ns = sub.add_parser("netsuite", help="Write the journal entries as a CSV for NetSuite's CSV Import Assistant")
+    comunes(ns)
+    ns.add_argument("--cuentas", default=None, help="CSV with columns cuenta,netsuite mapping each account to NetSuite")
+    ns.add_argument("--subsidiaria", default="", help="NetSuite subsidiary name (OneWorld accounts only)")
+    ns.set_defaults(fn=cmd_netsuite)
     u = sub.add_parser("ui", help="Open the review interface in the browser")
     u.add_argument("--datos", default=None); u.add_argument("--salida", default="salida"); u.set_defaults(fn=cmd_ui)
     return p
