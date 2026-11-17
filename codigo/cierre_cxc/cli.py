@@ -272,8 +272,9 @@ def cmd_fix(args) -> int:
     if destino is None:
         if not aprueba:
             print(f"\nTo approve: python -m cierre_cxc fix --datos \"{ruta}\" --usuario <your name> [--seguras] "
-                  "[--elegir P2=1,P5=2] [--rechazar P3]\n--seguras approves every SAFE one; each TO CONFIRM needs its "
-                  "candidate number. The original file is never changed: the corrections go to a copy.")
+                  "[--elegir P2,P5] [--rechazar P3]\n--seguras approves every SAFE one; --elegir approves the ones you "
+                  "name. NOT FIXED ones are only reported: correct them in the file. The original file is never "
+                  "changed: the corrections go to a copy.")
         else:
             print("\nNothing approved: no copy was written.")
         return 1
@@ -347,7 +348,7 @@ def construir_parser():
     fx = sub.add_parser("fix", help="List input errors with a proposed correction; approve them into a corrected copy")
     comunes(fx)
     fx.add_argument("--seguras", action="store_true", help="Approve every SAFE correction")
-    fx.add_argument("--elegir", default="", help="Corrections to approve with their candidate, e.g. P2=1,P5=2")
+    fx.add_argument("--elegir", default="", help="SAFE corrections to approve one by one, e.g. P2,P5 (or P2=1,P5=1)")
     fx.add_argument("--rechazar", default="", help="Corrections to reject, e.g. P3,P4")
     fx.add_argument("--comentario", default=""); fx.set_defaults(fn=cmd_fix)
     ns = sub.add_parser("netsuite", help="Write the journal entries as a CSV for NetSuite's CSV Import Assistant")

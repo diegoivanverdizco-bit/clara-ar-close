@@ -25,7 +25,7 @@ pip install -r requirements.txt
 ```bash
 # 0. if the file stops with input errors: list them with a proposed correction, approve, and run on the copy
 python -m cierre_cxc fix --datos "path/to/Case_Data.xlsx"
-python -m cierre_cxc fix --datos "path/to/Case_Data.xlsx" --usuario "Diego" --seguras --elegir P4=1
+python -m cierre_cxc fix --datos "path/to/Case_Data.xlsx" --usuario "Diego" --seguras
 
 # 1. run the close: writes an Excel (DRAFT until approved), CSVs and the audit log into ./salida
 python -m cierre_cxc run --datos "path/to/Case_Data.xlsx" --usuario "Diego"
@@ -83,13 +83,13 @@ The workbook is filled in by people, so the loader assumes it can be wrong. Ever
 ### Fixing them: proposed corrections, approved by a person
 
 `fix` lists every error that stopped the run, numbered P1, P2..., each with a correction computed by the code
-(`cierre_cxc/correcciones.py`; no language model proposes or changes a value):
+(`cierre_cxc/correcciones.py`; no language model proposes or changes a value). Corrections are deliberately simple
+(Diego, L87): only what is obvious is corrected, and nothing is guessed:
 
 | Label | Meaning | Examples |
 |---|---|---|
-| SAFE | One reading, and a check that passes. `--seguras` approves them all | `290,000.00` → 290000; IVA rate `16` → 0.16 when subtotal × 0.16 = IVA; the same CFDI row (same UUID) pasted twice |
-| TO CONFIRM | Candidates with their evidence; each needs `--elegir P<n>=<candidate>` | `1,500` (1500 or 1.5); a rate of 1.8 (18, close to the FIX median); an MXN invoice with a rate (USD, or no rate); a balance line or a totals row (delete it); cargo and abono in one row (split it); an opening balance that does not tie |
-| NOT FIXED | Nothing in the file says what the right value is: correct it by hand | `EUR`, an unreadable date, an empty folio, a negative opening balance |
+| SAFE | One reading, nothing to guess. `--seguras` approves them all; `--elegir P<n>` approves one | an amount typed as text in Mexican format (`290,000.00`, `$116,000.00`, `69,600`, `1,500`) → the number; IVA rate `16` → 0.16 when subtotal × 0.16 = IVA; the same CFDI row (same UUID) pasted twice |
+| NOT FIXED | The tool does not guess: the message gives the cell, the value and what to check; correct it in the file | `23.200,00` (European format), `290000,00`, `290 000`, an exchange rate out of range, a rate `16` that does not tie, `EUR`, an unreadable or missing date, an empty folio, a balance or totals line, an opening balance that does not tie, an MXN invoice with a rate |
 | STRUCTURE | No row can be read until it is fixed | a missing sheet or column |
 
 Rules:
@@ -107,23 +107,12 @@ Rules:
   starts its own review.
 
 The same approval works on the screen (`python -m cierre_cxc ui`). When the file has input errors, the screen shows
-the table of errors (P1, P2... are the same numbers `fix` gives) with **Approve all SAFE (n)**, one selector per
-TO CONFIRM (its candidates with the reason, or *Leave as is*), a *Reject* box per correction, an optional comment and
-**Write corrected copy and re-run** (disabled until the reviewer name is filled in). NOT FIXED and STRUCTURE errors are
+the table of errors (P1, P2... are the same numbers `fix` gives) with **Approve all SAFE (n)**, a *Reject* box per
+SAFE correction, an optional comment and **Write corrected copy and re-run** (disabled until the reviewer name is filled in). NOT FIXED and STRUCTURE errors are
 only shown. It uses the same function as `fix` (`correcciones.aplicar`), so the audit log is the same. The approval
 only holds for the file that was shown: if the file changed since the table was drawn, nothing is written. After the
 copy is written the screen works on it, but only while the uploaded file is the one that was corrected; the notice
 "This file is not the one reviewed before" can appear, by design: the copy is a different file.
-
-**Ask AI which option fits** (screen only, needs `ANTHROPIC_API_KEY`): for each TO CONFIRM, the model picks one of
-the options the code computed and says why in one short sentence ("AI suggests option 1: ..."). Besides the cell and its options,
-it gets the count, minimum, median and maximum of the other values in the same column, so it can tell that a deposit
-of 69.6 does not fit when the others go from 15,000.00 to 556,800.00. It never writes a
-value and never preselects: the reviewer still chooses. A suggestion is dropped when its option is not one of that
-error's candidates or its reason has a number that is not in the error or its options. Without a key, or if the call
-fails, there are no suggestions and the table stays the same. The call is logged (`llm_call`, `uso: correcciones`)
-and each approval records what the AI had suggested (`ia_sugirio`). 452 tests run (`python -m pytest -q` in
-`codigo/`).
 
 ## Receipts the rules cannot place: three levels
 
@@ -295,12 +284,12 @@ declined request all fall back to the template; a valid draft is accepted and lo
 
 ## Tests
 
-`python -m pytest -q` runs 452 tests (5 skip here: they need practice workbooks that are not in this repository):
+`python -m pytest -q` runs 449 tests (5 skip here: they need practice workbooks that are not in this repository):
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").
 - `test_todos_los_errores.py`: several errors in one file are all listed in one run, without repeats.
-- `test_correcciones.py`: the category and candidates proposed for each kind of input error.
+- `test_correcciones.py`: the three SAFE corrections, and that every other input error is NOT FIXED with no candidate.
 - `test_corregir.py`: `fix`: the copy, the approvals and their audit log, the second check and the close on the copy.
 - `test_netsuite.py`: the NetSuite CSV: same figures as the Excel, every entry balances, entries NetSuite would reject
   are left out, draft until approved, revaluation reversal date, account mapping.

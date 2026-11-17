@@ -180,21 +180,6 @@ def test_si_el_archivo_cambia_despues_de_dibujar_la_tabla_no_se_escribe_copia(da
     assert list(at.dataframe[0].value["P#"]) == ["P1", "P2", "P3"]           # the new list is on the screen
 
 
-def test_un_error_por_confirmar_escribe_el_candidato_elegido(datos_caso, tmp_path, monkeypatch):
-    import openpyxl
-    at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (B, 4, 6, "69,600"))
-    assert at.dataframe[0].value["Label"].tolist() == ["TO CONFIRM"]
-    sel = at.selectbox(key="fix_sel_P1")
-    assert sel.options[0] == "Leave as is" and len(sel.options) == 3         # leave it, or candidate 1 or 2
-    sel.set_value(sel.options[2]).run()
-    _boton(at, "fix_escribir").click().run()
-    assert not at.exception
-    (copia,) = salida.glob("*corregido.xlsx")
-    assert float(openpyxl.load_workbook(copia, data_only=True)[B]["F4"].value) == 69.6   # candidate 2, not 69600
-    (ap,) = _eventos(salida, "input_fix_approved")
-    assert ap["id"] == "P1" and ap["candidato"] == 2 and ap["usuario"] == "Diego"
-
-
 def test_dejar_como_esta_no_escribe_nada(datos_caso, tmp_path, monkeypatch):
     at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (B, 4, 6, "69,600"))
     _boton(at, "fix_escribir").click().run()
@@ -247,14 +232,14 @@ def test_si_el_archivo_original_cambia_la_pantalla_deja_la_copia(datos_caso, tmp
 
 def test_una_segunda_ronda_de_correcciones_sigue_sobre_la_copia_y_no_vuelve_al_original(
         datos_caso, tmp_path, monkeypatch):
-    # The SAFE ones first; the copy still has the one to confirm. Approving it writes a second copy, and the screen
-    # must keep working on the copies: the uploader still holds the original, whose SHA-256 is the one to compare.
+    # The first round rejects one SAFE correction; the copy still has it. Approving it writes a second copy, and the
+    # screen must keep working on the copies: the uploader still holds the original, whose SHA-256 is the one to compare.
     at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (C, 2, 9, 16), (B, 4, 6, "1,500"))
+    at.checkbox(key="fix_rech_P2").check().run()
     _boton(at, "fix_seguras").click().run()
     _boton(at, "fix_escribir").click().run()
-    assert list(at.dataframe[0].value["Label"]) == ["TO CONFIRM"]
-    sel = next(s for s in at.selectbox if s.key == "fix_sel_P1")
-    sel.set_value(sel.options[1]).run()
+    assert list(at.dataframe[0].value["Label"]) == ["SAFE"] and len(list(salida.glob("*corregido.xlsx"))) == 1
+    _boton(at, "fix_seguras").click().run()
     _boton(at, "fix_escribir").click().run()
     assert not at.exception and not at.error
     assert len(list(salida.glob("*corregido.xlsx"))) == 2
@@ -262,34 +247,12 @@ def test_una_segunda_ronda_de_correcciones_sigue_sobre_la_copia_y_no_vuelve_al_o
     assert "Closing AR (MXN)" in {m.label for m in at.metric}            # the close ran on the second copy
 
 
-def test_la_ia_sugiere_una_opcion_pero_la_persona_elige_y_la_bitacora_lo_registra(datos_caso, tmp_path, monkeypatch):
-    import cierre_cxc.asistente_llm as llm
-    from test_asistente_llm import FakeCliente
-    fake = FakeCliente(json.dumps({"sugerencias": [
-        {"id": "P1", "opcion": 1, "porque": "Usa 1500: un abono de 1.5 pesos no tiene sentido."}]}))
-    monkeypatch.setattr(llm, "_cliente_anthropic", lambda: fake)
-    at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (B, 4, 6, "1,500"))
-    assert fake.llamadas == []                                               # only when the reviewer asks
-    _boton(at, "fix_ia").click().run()
-    assert any("AI suggests option 1" in i.value and "1.5 pesos" in i.value for i in at.info)   # visible, not grey
-    sel = next(s for s in at.selectbox if s.key == "fix_sel_P1")
-    assert sel.value == "Leave as is"                                        # the AI never preselects
-    sel.set_value(sel.options[1]).run()
-    _boton(at, "fix_escribir").click().run()
-    assert not at.exception
-    (aprobada,) = _eventos(salida, "input_fix_approved")
-    assert aprobada["candidato"] == 1 and aprobada["ia_sugirio"] == 1 and aprobada["usuario"] == "Diego"
-    assert [e["aceptadas"] for e in _eventos(salida, "llm_call") if e.get("uso") == "correcciones"] == [["P1"]]
-
-
-def test_sin_clave_la_ia_no_sugiere_y_la_tabla_sigue_igual(datos_caso, tmp_path, monkeypatch):
-    import cierre_cxc.asistente_llm as llm
-    monkeypatch.setattr(llm, "_cliente_anthropic", lambda: None)
-    at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (B, 4, 6, "1,500"))
-    _boton(at, "fix_ia").click().run()
-    assert not at.exception
-    assert any("no suggestion" in c.value for c in at.caption)
-    assert not any("AI suggests" in i.value for i in at.info)
+def test_la_pantalla_no_ofrece_ia_ni_selectores_de_opciones(datos_caso, tmp_path, monkeypatch):
+    # Corrections are SAFE or NOT FIXED: there is nothing to choose between, so no AI suggestion and no selectors
+    at, ruta, salida = _app_con_errores(datos_caso, tmp_path, monkeypatch, (B, 4, 6, "1,500"), (B, 3, 6, "23.200,00"))
+    assert sorted(at.dataframe[0].value["Label"]) == ["NOT FIXED", "SAFE"]
+    assert not at.selectbox and "fix_ia" not in {b.key for b in at.button}
+    assert _boton(at, "fix_seguras").label == "Approve all SAFE (1)"
 
 
 def test_el_boton_de_netsuite_escribe_el_csv_en_borrador_y_lo_registra(datos_caso, tmp_path, monkeypatch):

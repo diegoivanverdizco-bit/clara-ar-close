@@ -18,24 +18,21 @@ How to run the month-end AR close with the tool and review it. Setup and archite
 
 ## Input errors: approve the corrections
 
-The code proposes every correction from the file itself; you approve it. The original file is never changed: the
+The code proposes a correction only when it is obvious, and you approve it. The original file is never changed: the
 approved corrections go to a copy (`<date> <name> corregido.xlsx`), the copy is checked again and, if it has no
 errors left, the close runs on it. Every approval and rejection goes to the audit log with your name, the cell, the
 value before and after.
 
 | Label | Example | What you do |
 |---|---|---|
-| SAFE | VAT rate `16` where subtotal x 0.16 equals the VAT; amount typed as text `"290,000.00"` | Approve them all at once |
-| TO CONFIRM | `"69,600"`: 69600 or 69.6? | Pick one option, or leave it as is |
-| NOT FIXED | an empty date, a currency the tool does not handle | Fix it in the input file: nothing in the file says the right value |
+| SAFE | an amount typed as text in Mexican format (`"290,000.00"`, `"$116,000.00"`, `"69,600"`); VAT rate `16` where subtotal x 0.16 equals the VAT; a row pasted twice, exactly the same | Approve them all at once |
+| NOT FIXED | `"23.200,00"`, an exchange rate out of range, an empty date, a currency the tool does not handle | Fix it in the input file: the tool does not guess; the message gives the cell, the value and what to check |
 | STRUCTURE | a missing sheet or column | Fix the file; nothing else is checked until then |
 
-- **In the browser:** **Approve all SAFE**, one selector per TO CONFIRM, then **Write corrected copy and re-run**.
-  **Ask AI which option fits** gives, for each TO CONFIRM, the option the AI finds more likely and why in one
-  sentence (it sees the cell, the options and the range of the other values in that column). It is only a
-  suggestion: it never writes a value or picks for you, and the log records what it suggested next to what you chose.
+- **In the browser:** **Approve all SAFE** (tick *Reject* on any you do not want), then **Write corrected copy and
+  re-run**. There is no AI in this step: nothing is left to choose between.
 - **In the terminal:** `fix --datos <file.xlsx>` lists them as P1, P2...; then
-  `fix --datos <file.xlsx> --usuario <your name> --seguras --elegir P2=1 --rechazar P3`. If the file changed after
+  `fix --datos <file.xlsx> --usuario <your name> --seguras --rechazar P3` (or `--elegir P2` to approve one by one). If the file changed after
   the list was shown, the numbers are refused: list again.
 
 ## The three levels of a receipt

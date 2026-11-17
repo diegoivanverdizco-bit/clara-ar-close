@@ -60,7 +60,7 @@ def correcciones_en_pantalla(problemas, ruta, origen):
     huella = sha256_archivo(ruta)
     vista = st.session_state.get("fix_lista")      # SHA-256 of the file whose list was drawn on the previous run
     if vista != huella:                            # a new list: the old selections would point at other errors
-        for k in [k for k in st.session_state if k.startswith(("fix_sel_", "fix_rech_"))]:
+        for k in [k for k in st.session_state if k.startswith("fix_rech_")]:
             del st.session_state[k]
     st.session_state["fix_lista"] = huella
     st.subheader("Input errors and proposed corrections")
@@ -73,45 +73,23 @@ def correcciones_en_pantalla(problemas, ruta, origen):
         "Proposal": "; ".join(f"{i}) {c.que}" for i, c in enumerate(p.candidatos, start=1)) or "No proposal"}
         for pid, p in numerados.items()]), width="stretch", hide_index=True)
     seguras = [(pid, p) for pid, p in numerados.items() if p.categoria == "a"]
-    confirmar = [(pid, p) for pid, p in numerados.items() if p.categoria == "b"]
     solo = [pid for pid, p in numerados.items() if p.categoria in ("c", "d")]
     if solo:
         st.caption("NOT FIXED / STRUCTURE (" + ", ".join(solo) + "): nothing in the file says what the right value "
                    "is. Correct them in the file and upload it again.")
-    if not (seguras or confirmar):
+    if not seguras:
         return
     aprobadas_seguras = st.session_state.get("fix_seguras_de") == huella
-    if seguras:
-        st.button(f"Approve all SAFE ({len(seguras)})", key="fix_seguras", disabled=not usuario,
-                  on_click=lambda: st.session_state.__setitem__("fix_seguras_de", huella),
-                  help="Each has one reading and a check that passes. Reject any you do not want below.")
-        if aprobadas_seguras:
-            st.caption(f"All {len(seguras)} SAFE corrections will be applied, except the ones rejected below.")
-        with st.expander(f"SAFE corrections ({len(seguras)})"):
-            for pid, p in seguras:
-                c = p.candidatos[0]
-                st.markdown(f"**{pid}** · {_md(p.mensaje)}  \n→ {_md(c.que)}" + (f" ({_md(c.porque)})" if c.porque else ""))
-                st.checkbox("Reject", key=f"fix_rech_{pid}")
-    # The AI only says which of the code's options fits and why, in one sentence; it never preselects or writes
-    if confirmar and st.button("Ask AI which option fits", key="fix_ia",
-                               help="Suggestion only: the AI picks one of the options above and says why. You choose."):
-        from cierre_cxc import asistente_llm
-        st.session_state["fix_ia_de"] = {"huella": huella, "sug": asistente_llm.sugerir_correcciones(numerados, bit, ruta=ruta)}
-    pedida = st.session_state.get("fix_ia_de")
-    sug = pedida["sug"] if pedida and pedida["huella"] == huella else {}
-    if pedida and pedida["huella"] == huella and not sug:
-        st.caption("The AI gave no suggestion (no API key, no clear answer, or its answer failed the check). The "
-                   "code's reasons are shown.")
-    opciones = {}
-    for pid, p in confirmar:
-        st.markdown(f"**{pid}** · {_md(p.mensaje)}")
-        opciones[pid] = ["Leave as is"] + [f"{i}) {c.que}" + (f" - {c.porque}" if c.porque else "")
-                                           for i, c in enumerate(p.candidatos, start=1)]
-        if pid in sug:
-            st.info(f"AI suggests option {sug[pid]['opcion']}: {_md(sug[pid]['porque'])}")
-        cols = st.columns([5, 1.5])
-        cols[0].selectbox(f"{pid}: which correction?", opciones[pid], key=f"fix_sel_{pid}")
-        cols[1].checkbox("Reject", key=f"fix_rech_{pid}")
+    st.button(f"Approve all SAFE ({len(seguras)})", key="fix_seguras", disabled=not usuario,
+              on_click=lambda: st.session_state.__setitem__("fix_seguras_de", huella),
+              help="Each has one reading and nothing to guess. Reject any you do not want below.")
+    if aprobadas_seguras:
+        st.caption(f"All {len(seguras)} SAFE corrections will be applied, except the ones rejected below.")
+    with st.expander(f"SAFE corrections ({len(seguras)})"):
+        for pid, p in seguras:
+            c = p.candidatos[0]
+            st.markdown(f"**{pid}** · {_md(p.mensaje)}  \n→ {_md(c.que)}" + (f" ({_md(c.porque)})" if c.porque else ""))
+            st.checkbox("Reject", key=f"fix_rech_{pid}")
     comentario = st.text_input("Comment (optional; goes to the audit log with every approval or rejection)",
                                key="fix_comentario")
     if not st.button("Write corrected copy and re-run", key="fix_escribir", type="primary", disabled=not usuario):
@@ -119,17 +97,14 @@ def correcciones_en_pantalla(problemas, ruta, origen):
     if vista != huella:
         st.error("The file changed since this list was shown. Review the new list.")
         return
-    elegidos = [f"{pid}={ops.index(st.session_state[f'fix_sel_{pid}'])}" for pid, ops in opciones.items()
-                if st.session_state.get(f"fix_sel_{pid}", "Leave as is") != "Leave as is"]
     rechazar = [pid for pid in numerados if st.session_state.get(f"fix_rech_{pid}")]
     try:
-        aprobadas, rechazadas = cor.elegir(numerados, aprobadas_seguras, ",".join(elegidos), ",".join(rechazar))
+        aprobadas, rechazadas = cor.elegir(numerados, aprobadas_seguras, "", ",".join(rechazar))
         if not aprobadas and not rechazadas:
-            st.warning("Nothing approved: no copy was written. Approve the SAFE ones or pick a correction first.")
+            st.warning("Nothing approved: no copy was written. Approve the SAFE ones first.")
             return
         cor.registrar_lista(bit, ruta.name, huella, problemas)
-        destino = cor.aplicar(ruta, salida, bit, huella, aprobadas, rechazadas, comentario, datetime.now(),
-                              ia={pid: s["opcion"] for pid, s in sug.items()})
+        destino = cor.aplicar(ruta, salida, bit, huella, aprobadas, rechazadas, comentario, datetime.now())
     except cor.AprobacionInvalida as e:
         st.error(f"Input error: {_md(e)} Nothing was written.")
         return
