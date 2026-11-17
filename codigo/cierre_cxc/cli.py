@@ -1,4 +1,4 @@
-"""Command line: run the close, review and approve, override a match, launch the review UI."""
+"""Command line: run the close, fix input errors, review and approve, override a match, launch the review UI."""
 from __future__ import annotations
 import argparse
 import sys
@@ -188,6 +188,77 @@ def cmd_reject_correction(args) -> int:
     return 0
 
 
+def cmd_fix(args) -> int:
+    """List the input errors with their proposed corrections; with approvals, write a corrected copy (never the
+    original), log who approved each change, check the copy again and, with no errors left, run the close on it."""
+    from datetime import datetime
+    from . import correcciones as cor
+    from .cargar import cargar
+    ruta, salida = Path(args.datos), Path(args.salida)
+    try:
+        cargar(ruta)
+    except SchemaError as e:
+        problemas = e.problemas
+    else:
+        print(f"No input errors in {ruta.name}: nothing to fix. Run the close with: python -m cierre_cxc run "
+              f"--datos \"{ruta}\"")
+        return 0
+    numerados = cor.numerar(problemas)
+    aprueba = bool(args.seguras or args.elegir or args.rechazar)
+    if aprueba and not (args.usuario or "").strip():
+        print("A reviewer name is required to approve or reject corrections (--usuario).", file=sys.stderr)
+        return 1
+    try:
+        aprobadas, rechazadas = cor.elegir(numerados, args.seguras, args.elegir, args.rechazar)
+    except cor.AprobacionInvalida as e:
+        print(f"Input error: {e} Nothing was written.", file=sys.stderr)
+        return 1
+    bit = Bitacora(salida / "bitacora_auditoria.jsonl", args.usuario)
+    huella = sha256_archivo(ruta)
+    if args.elegir or args.rechazar:
+        # P1, P2... follow the order of the errors: a number means what the reviewer saw only if the file is the one
+        # whose list was shown last
+        listas = [e for e in bit.leer() if e.get("evento") == "input_fix_proposed" and e.get("archivo") == ruta.name]
+        if not listas:
+            print(f"Input error: List the corrections first (python -m cierre_cxc fix --datos \"{ruta}\"), then "
+                  "choose them by number. Nothing was written.", file=sys.stderr)
+            return 1
+        if listas[-1].get("sha256") != huella:
+            print(f"Input error: {ruta.name} changed since its list was shown, so the numbers may point to other "
+                  "errors. List the corrections again and choose from the new list. Nothing was written.", file=sys.stderr)
+            return 1
+    cor.registrar_lista(bit, ruta.name, huella, problemas)
+    print(f"{ruta.name}: {len(problemas)} input error(s).")
+    print(cor.listar(numerados))
+    try:
+        destino = cor.aplicar(ruta, salida, bit, huella, aprobadas, rechazadas, args.comentario, datetime.now())
+    except cor.AprobacionInvalida as e:
+        print(f"Input error: {e} Nothing was written.", file=sys.stderr)
+        return 1
+    if destino is None:
+        if not aprueba:
+            print(f"\nTo approve: python -m cierre_cxc fix --datos \"{ruta}\" --usuario <your name> [--seguras] "
+                  "[--elegir P2=1,P5=2] [--rechazar P3]\n--seguras approves every SAFE one; each TO CONFIRM needs its "
+                  "candidate number. The original file is never changed: the corrections go to a copy.")
+        else:
+            print("\nNothing approved: no copy was written.")
+        return 1
+    print(f"\nApplied {len(aprobadas)} correction(s) to a copy: {destino}")
+    for pid, _, _, cand in aprobadas:
+        print(f"  {pid}: {cand.que}")
+    try:
+        cargar(destino)
+    except SchemaError as e:
+        cor.registrar_lista(bit, destino.name, sha256_archivo(destino), e.problemas)
+        print(f"\nThe corrected copy still has {len(e.problemas)} error(s); correct or approve them with: "
+              f"python -m cierre_cxc fix --datos \"{destino}\" --usuario {args.usuario}")
+        print(cor.listar(cor.numerar(e.problemas)))
+        return 1
+    print("\nThe corrected copy has no input errors. Running the close on it.\n")
+    args.datos = str(destino)
+    return cmd_run(args)
+
+
 def cmd_ui(args) -> int:
     import subprocess
     app = Path(__file__).with_name("app.py")
@@ -239,6 +310,12 @@ def construir_parser():
     rl.add_argument("--comentario", default=""); rl.set_defaults(fn=cmd_rules)
     c = sub.add_parser("reject-correction", help="Reject a conditional rate-correction entry"); comunes(c)
     c.add_argument("folio"); c.add_argument("--comentario", default=""); c.set_defaults(fn=cmd_reject_correction)
+    fx = sub.add_parser("fix", help="List input errors with a proposed correction; approve them into a corrected copy")
+    comunes(fx)
+    fx.add_argument("--seguras", action="store_true", help="Approve every SAFE correction")
+    fx.add_argument("--elegir", default="", help="Corrections to approve with their candidate, e.g. P2=1,P5=2")
+    fx.add_argument("--rechazar", default="", help="Corrections to reject, e.g. P3,P4")
+    fx.add_argument("--comentario", default=""); fx.set_defaults(fn=cmd_fix)
     u = sub.add_parser("ui", help="Open the review interface in the browser")
     u.add_argument("--datos", default=None); u.add_argument("--salida", default="salida"); u.set_defaults(fn=cmd_ui)
     return p

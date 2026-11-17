@@ -8,10 +8,33 @@ How to run the month-end AR close with the tool and review it. Setup and archite
    log live there; rules carry over to the next month only if you copy `reglas_aprendidas.json` and the audit log.
 2. **Run:** `python -m cierre_cxc run --datos <file.xlsx> --salida <folder> --usuario <your name>`.
    It prints the period it used. If it is not the month you expect, stop and check the file.
-3. **Fix the input, not the output.** If the run stops with an input error, it names the sheet, row and column: fix
-   that cell in the input workbook and run again. Never edit the Excel the tool produces.
+3. **Fix the input, not the output.** If the input has errors, the run lists all of them (sheet, row, column and
+   value) and proposes a correction for each one. Approve them as shown below, or fix the cells in the input
+   workbook and run again. Never edit the Excel the tool produces.
 4. **Review** in the browser (`python -m cierre_cxc ui --datos <file.xlsx>`) or with the commands below.
 5. The close is final only when the file is called `..._APROBADO.xlsx`.
+
+## Input errors: approve the corrections
+
+The code proposes every correction from the file itself; you approve it. The original file is never changed: the
+approved corrections go to a copy (`<date> <name> corregido.xlsx`), the copy is checked again and, if it has no
+errors left, the close runs on it. Every approval and rejection goes to the audit log with your name, the cell, the
+value before and after.
+
+| Label | Example | What you do |
+|---|---|---|
+| SAFE | VAT rate `16` where subtotal x 0.16 equals the VAT; amount typed as text `"290,000.00"` | Approve them all at once |
+| TO CONFIRM | `"69,600"`: 69600 or 69.6? | Pick one option, or leave it as is |
+| NOT FIXED | an empty date, a currency the tool does not handle | Fix it in the input file: nothing in the file says the right value |
+| STRUCTURE | a missing sheet or column | Fix the file; nothing else is checked until then |
+
+- **In the browser:** **Approve all SAFE**, one selector per TO CONFIRM, then **Write corrected copy and re-run**.
+  **Ask AI which option fits** gives, for each TO CONFIRM, the option the AI finds more likely and why in one
+  sentence (it sees the cell, the options and the range of the other values in that column). It is only a
+  suggestion: it never writes a value or picks for you, and the log records what it suggested next to what you chose.
+- **In the terminal:** `fix --datos <file.xlsx>` lists them as P1, P2...; then
+  `fix --datos <file.xlsx> --usuario <your name> --seguras --elegir P2=1 --rechazar P3`. If the file changed after
+  the list was shown, the numbers are refused: list again.
 
 ## The three levels of a receipt
 

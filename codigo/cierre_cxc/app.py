@@ -44,6 +44,102 @@ def _df(filas):
     return df
 
 
+def _md(texto) -> str:
+    """Markdown reads the text between two "$" as a formula, so amounts like $290,000.00 would vanish."""
+    return str(texto).replace("$", "\\$")
+
+
+def correcciones_en_pantalla(problemas, ruta, origen):
+    """The table of input errors with the same proposals and numbering (P1, P2...) as `fix`, and the approval of
+    corrections. Applying goes through correcciones.aplicar, the function the command line uses. `ruta` is the file
+    shown (the original or a corrected copy); `origen` is the SHA-256 of the file loaded, which keeps the screen on
+    the newest copy."""
+    from datetime import datetime
+    from cierre_cxc import correcciones as cor
+    numerados = cor.numerar(problemas)
+    huella = sha256_archivo(ruta)
+    vista = st.session_state.get("fix_lista")      # SHA-256 of the file whose list was drawn on the previous run
+    if vista != huella:                            # a new list: the old selections would point at other errors
+        for k in [k for k in st.session_state if k.startswith(("fix_sel_", "fix_rech_"))]:
+            del st.session_state[k]
+    st.session_state["fix_lista"] = huella
+    st.subheader("Input errors and proposed corrections")
+    st.caption("The code computed every proposal from the file itself; no language model changes a value. The "
+               "original file is never written: approved corrections go to a corrected copy.")
+    st.dataframe(pd.DataFrame([{
+        "P#": pid, "Label": cor.ETIQUETA[p.categoria], "Sheet": p.hoja,
+        "Cell": p.celda or (f"row {p.fila}" if p.fila else ""), "Value": "" if p.valor is None else str(p.valor),
+        "Message": p.mensaje,
+        "Proposal": "; ".join(f"{i}) {c.que}" for i, c in enumerate(p.candidatos, start=1)) or "No proposal"}
+        for pid, p in numerados.items()]), width="stretch", hide_index=True)
+    seguras = [(pid, p) for pid, p in numerados.items() if p.categoria == "a"]
+    confirmar = [(pid, p) for pid, p in numerados.items() if p.categoria == "b"]
+    solo = [pid for pid, p in numerados.items() if p.categoria in ("c", "d")]
+    if solo:
+        st.caption("NOT FIXED / STRUCTURE (" + ", ".join(solo) + "): nothing in the file says what the right value "
+                   "is. Correct them in the file and upload it again.")
+    if not (seguras or confirmar):
+        return
+    aprobadas_seguras = st.session_state.get("fix_seguras_de") == huella
+    if seguras:
+        st.button(f"Approve all SAFE ({len(seguras)})", key="fix_seguras", disabled=not usuario,
+                  on_click=lambda: st.session_state.__setitem__("fix_seguras_de", huella),
+                  help="Each has one reading and a check that passes. Reject any you do not want below.")
+        if aprobadas_seguras:
+            st.caption(f"All {len(seguras)} SAFE corrections will be applied, except the ones rejected below.")
+        with st.expander(f"SAFE corrections ({len(seguras)})"):
+            for pid, p in seguras:
+                c = p.candidatos[0]
+                st.markdown(f"**{pid}** · {_md(p.mensaje)}  \n→ {_md(c.que)}" + (f" ({_md(c.porque)})" if c.porque else ""))
+                st.checkbox("Reject", key=f"fix_rech_{pid}")
+    # The AI only says which of the code's options fits and why, in one sentence; it never preselects or writes
+    if confirmar and st.button("Ask AI which option fits", key="fix_ia",
+                               help="Suggestion only: the AI picks one of the options above and says why. You choose."):
+        from cierre_cxc import asistente_llm
+        st.session_state["fix_ia_de"] = {"huella": huella, "sug": asistente_llm.sugerir_correcciones(numerados, bit, ruta=ruta)}
+    pedida = st.session_state.get("fix_ia_de")
+    sug = pedida["sug"] if pedida and pedida["huella"] == huella else {}
+    if pedida and pedida["huella"] == huella and not sug:
+        st.caption("The AI gave no suggestion (no API key, no clear answer, or its answer failed the check). The "
+                   "code's reasons are shown.")
+    opciones = {}
+    for pid, p in confirmar:
+        st.markdown(f"**{pid}** · {_md(p.mensaje)}")
+        opciones[pid] = ["Leave as is"] + [f"{i}) {c.que}" + (f" - {c.porque}" if c.porque else "")
+                                           for i, c in enumerate(p.candidatos, start=1)]
+        if pid in sug:
+            st.caption(f"AI suggests option {sug[pid]['opcion']}: {_md(sug[pid]['porque'])}")
+        cols = st.columns([5, 1.5])
+        cols[0].selectbox(f"{pid}: which correction?", opciones[pid], key=f"fix_sel_{pid}")
+        cols[1].checkbox("Reject", key=f"fix_rech_{pid}")
+    comentario = st.text_input("Comment (optional; goes to the audit log with every approval or rejection)",
+                               key="fix_comentario")
+    if not st.button("Write corrected copy and re-run", key="fix_escribir", type="primary", disabled=not usuario):
+        return
+    if vista != huella:
+        st.error("The file changed since this list was shown. Review the new list.")
+        return
+    elegidos = [f"{pid}={ops.index(st.session_state[f'fix_sel_{pid}'])}" for pid, ops in opciones.items()
+                if st.session_state.get(f"fix_sel_{pid}", "Leave as is") != "Leave as is"]
+    rechazar = [pid for pid in numerados if st.session_state.get(f"fix_rech_{pid}")]
+    try:
+        aprobadas, rechazadas = cor.elegir(numerados, aprobadas_seguras, ",".join(elegidos), ",".join(rechazar))
+        if not aprobadas and not rechazadas:
+            st.warning("Nothing approved: no copy was written. Approve the SAFE ones or pick a correction first.")
+            return
+        cor.registrar_lista(bit, ruta.name, huella, problemas)
+        destino = cor.aplicar(ruta, salida, bit, huella, aprobadas, rechazadas, comentario, datetime.now(),
+                              ia={pid: s["opcion"] for pid, s in sug.items()})
+    except cor.AprobacionInvalida as e:
+        st.error(f"Input error: {_md(e)} Nothing was written.")
+        return
+    if destino is None:
+        st.warning("Nothing approved: no copy was written. The rejections were logged.")
+        return
+    st.session_state["corregida"] = {"origen": origen, "copia": str(destino)}
+    st.rerun()
+
+
 args = _args()
 st.set_page_config(page_title="AR close review", layout="wide")
 st.title("AR close: review and approval")
@@ -68,6 +164,15 @@ elif ruta_txt:
 if not ruta:
     st.info("Upload a dataset or give its path in the sidebar.")
     st.stop()
+# After a corrected copy is written, the screen works on it, but only while the file shown is the one that was
+# corrected (same SHA-256): the uploader still holds the original, and another file must not get this copy.
+# "origen" is always the SHA-256 of the file in the uploader or the path, also after a second round on a copy.
+copia = st.session_state.get("corregida")
+origen = sha256_archivo(ruta) if Path(ruta).is_file() else None
+if copia and origen and Path(copia["copia"]).is_file() and origen == copia["origen"]:
+    ruta = Path(copia["copia"])
+else:
+    copia = None
 
 try:
     bit = Bitacora(salida / "bitacora_auditoria.jsonl", usuario or None)
@@ -79,6 +184,8 @@ try:
 except RevisionError as e:
     st.error(str(e))
     st.stop()
+if copia:
+    st.info(f"Working on the corrected copy {ruta.name}. The original file was not changed.")
 if rev.discrepancias:
     st.warning("Notice: revision.json does not match the audit log (an older copy put back, or edited by hand?): "
          + "; ".join(rev.discrepancias) + ". Every approval counts as pending until it matches: redo or "
@@ -104,7 +211,10 @@ try:
         s = ejecutar(ruta, decisiones=rev.como_decisiones(), bitacora=bit, sugeridor=sugeridor,
                      reglas=Reglas(salida / "reglas_aprendidas.json", bit))
 except (SchemaError, RevisionError) as e:
-    st.error(f"Input error: {e}")
+    # Markdown reads the text between two "$" as a formula: with several errors, amounts like $290,000.00 would vanish
+    st.error(f"Input error: {e}".replace("$", "\\$"))
+    if isinstance(e, SchemaError) and e.problemas:
+        correcciones_en_pantalla(e.problemas, ruta, origen)
     st.stop()
 for a in s.res.avisos:
     if a.startswith(("Learned rule", "Learned rules are NOT used")):

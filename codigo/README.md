@@ -23,6 +23,10 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
+# 0. if the file stops with input errors: list them with a proposed correction, approve, and run on the copy
+python -m cierre_cxc fix --datos "path/to/Case_Data.xlsx"
+python -m cierre_cxc fix --datos "path/to/Case_Data.xlsx" --usuario "Diego" --seguras --elegir P4=1
+
 # 1. run the close: writes an Excel (DRAFT until approved), CSVs and the audit log into ./salida
 python -m cierre_cxc run --datos "path/to/Case_Data.xlsx" --usuario "Diego"
 
@@ -59,14 +63,64 @@ The workbook is filled in by people, so the loader assumes it can be wrong. Ever
   a title row above the header, UUIDs in lower case or in braces, folios stored as `1001.0`, `Pesos` / `Ingreso`
   written out.
 - **Stopped with a message** that names the sheet, row and column and says what to fix. Examples: amounts typed as
-  text (`290,000.00`), negative amounts, cargo and abono in the same row, an IVA rate typed as `16`, currencies other
-  than MXN/USD, rows pasted twice, an old month's sheet left in the file, an MXN invoice with an exchange rate,
+  text (`290,000.00`, `nan`), negative amounts, cargo and abono in the same row, an IVA rate typed as `16`, currencies
+  other than MXN/USD, rows pasted twice, an old month's sheet left in the file, an MXN invoice with an exchange rate,
   opening balances that do not tie (MXN balance vs. balance × rate, or a currency different from the CFDI).
+  The run lists **every** such error at once, so a file with five mistakes needs one fix-and-run, not five. Errors in
+  the structure (a missing sheet or column) are listed first and alone, because no row can be read until the structure
+  is right. A cell that cannot be read skips the checks that depend on it, and only the first cross check of a row is
+  listed, so one wrong cell is not reported three times. The message lists up to 20 errors and counts the rest; with a
+  single error it is that error's message.
 - **Flagged** as a notice or an exception in the output. Examples: bank rows dated outside the period (not processed),
   a duplicated bank row, text dates that could be day/month or month/day, an exchange rate 10 % away from the rest,
   a payer who typed another customer's invoice number, a receipt with a not-AR keyword that mentions an invoice.
 
 `tests/test_sabotaje.py` keeps every one of these as a permanent test.
+
+### Fixing them: proposed corrections, approved by a person
+
+`fix` lists every error that stopped the run, numbered P1, P2..., each with a correction computed by the code
+(`cierre_cxc/correcciones.py`; no language model proposes or changes a value):
+
+| Label | Meaning | Examples |
+|---|---|---|
+| SAFE | One reading, and a check that passes. `--seguras` approves them all | `290,000.00` → 290000; IVA rate `16` → 0.16 when subtotal × 0.16 = IVA; the same CFDI row (same UUID) pasted twice |
+| TO CONFIRM | Candidates with their evidence; each needs `--elegir P<n>=<candidate>` | `1,500` (1500 or 1.5); a rate of 1.8 (18, close to the FIX median); an MXN invoice with a rate (USD, or no rate); a balance line or a totals row (delete it); cargo and abono in one row (split it); an opening balance that does not tie |
+| NOT FIXED | Nothing in the file says what the right value is: correct it by hand | `EUR`, an unreadable date, an empty folio, a negative opening balance |
+| STRUCTURE | No row can be read until it is fixed | a missing sheet or column |
+
+Rules:
+
+- The original file is never written. The approved corrections go to a copy in the output folder,
+  `YYYY-MM-DD HHMMSS <name> corregido.xlsx`, which differs from the original only in the approved cells and rows.
+  The copy holds values, not formulas, because the tool reads values.
+- Approving needs `--usuario`. Every proposal list, approval, rejection (`--rechazar P3 --comentario ...`) and copy goes
+  to the audit log with who did it, the cells before and after, and the SHA-256 of the original and the copy.
+- The numbers follow the order of the errors, so `--elegir` and `--rechazar` only work against the last list shown
+  for that same file. If the file changed since (someone corrected a cell by hand), they are refused until the list is
+  shown again. The copy re-checks every cell it writes and refuses if the cell is no longer what was proposed.
+- After writing the copy, `fix` checks it again: a correction can uncover another error (an amount that becomes a
+  number can show that an MXN invoice has a rate). With no errors left, it runs the whole close on the copy, which
+  starts its own review.
+
+The same approval works on the screen (`python -m cierre_cxc ui`). When the file has input errors, the screen shows
+the table of errors (P1, P2... are the same numbers `fix` gives) with **Approve all SAFE (n)**, one selector per
+TO CONFIRM (its candidates with the reason, or *Leave as is*), a *Reject* box per correction, an optional comment and
+**Write corrected copy and re-run** (disabled until the reviewer name is filled in). NOT FIXED and STRUCTURE errors are
+only shown. It uses the same function as `fix` (`correcciones.aplicar`), so the audit log is the same. The approval
+only holds for the file that was shown: if the file changed since the table was drawn, nothing is written. After the
+copy is written the screen works on it, but only while the uploaded file is the one that was corrected; the notice
+"This file is not the one reviewed before" can appear, by design: the copy is a different file.
+
+**Ask AI which option fits** (screen only, needs `ANTHROPIC_API_KEY`): for each TO CONFIRM, the model picks one of
+the options the code computed and says why in one short sentence ("AI suggests option 1: ..."). Besides the cell and its options,
+it gets the count, minimum, median and maximum of the other values in the same column, so it can tell that a deposit
+of 69.6 does not fit when the others go from 15,000.00 to 556,800.00. It never writes a
+value and never preselects: the reviewer still chooses. A suggestion is dropped when its option is not one of that
+error's candidates or its reason has a number that is not in the error or its options. Without a key, or if the call
+fails, there are no suggestions and the table stays the same. The call is logged (`llm_call`, `uso: correcciones`)
+and each approval records what the AI had suggested (`ia_sugirio`). 438 tests run (`python -m pytest -q` in
+`codigo/`).
 
 ## Receipts the rules cannot place: three levels
 
@@ -211,17 +265,20 @@ declined request all fall back to the template; a valid draft is accepted and lo
 
 ## Tests
 
-`python -m pytest -q` runs 339 tests:
+`python -m pytest -q` runs 438 tests (5 skip here: they need practice workbooks that are not in this repository):
 
 - `test_caso_septiembre.py`: the control answers of the September case, worked out by hand.
 - `test_sabotaje.py`: human errors injected into the case workbook (see "Input checks").
+- `test_todos_los_errores.py`: several errors in one file are all listed in one run, without repeats.
+- `test_correcciones.py`: the category and candidates proposed for each kind of input error.
+- `test_corregir.py`: `fix`: the copy, the approvals and their audit log, the second check and the close on the copy.
 - `test_niveles.py`: the three levels, accepting a candidate, and learned rules (learning, replacing, removing,
   conflicts, a damaged rules file).
 - `test_dataset_nuevo.py`: a synthetic October dataset with other customers, other header spellings and missing
   FX days. It also covers patterns the case does not have: one receipt for two invoices, an overpayment, and a
   cross-currency receipt with a small rate difference.
 - `test_asistente_llm.py`: the model guards.
-- `test_app.py`: the review UI, including the AI draft tab.
+- `test_app.py`: the review UI, including the AI draft tab and the table of input errors with the approval of corrections.
 - `test_inicio.py`: the Start here tab: each kind of card, its buttons, approving the rest and the AI rewording.
 - `test_redaccion.py`: the AI draft and its number-and-folio check.
 - `test_rfc_generico.py`: customers that share a generic RFC (XEXX010101000 foreign, XAXX010101000 general

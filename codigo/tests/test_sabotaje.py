@@ -137,6 +137,10 @@ ERRORES = [
      "If it is quoted as USD per MXN, invert it"),
     ("FX columns swapped", lambda wb: [(setattr(r[0], "value", r[1].value), setattr(r[1], "value", v))
                                        for r in wb[T].iter_rows(min_row=2) for v in [r[0].value]], "is not a number"),
+    # round 8 (2026-11-17): Decimal accepts these words, and the run used to crash with a traceback
+    ("amount typed as nan", celda(B, 3, 6, "nan"), "'nan' is not a number"),
+    ("amount typed as Infinity", celda(B, 3, 6, "Infinity"), "'Infinity' is not a number"),
+    ("exchange rate typed as -inf", celda(T, 40, 2, "-inf"), "'-inf' is not a number"),
 ]
 
 
